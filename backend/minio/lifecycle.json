@@ -1,0 +1,6 @@
+{
+  "Rules": [
+    {"ID": "imports", "Status": "Enabled", "Filter": {"Prefix": "imports/"}, "Expiration": {"Days": 30}},
+    {"ID": "old-versions", "Status": "Enabled", "Filter": {"Prefix": ""}, "NoncurrentVersionExpiration": {"NoncurrentDays": 30}}
+  ]
+}

@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.pdf binary
+*.png binary
+*.woff binary
+*.woff2 binary
+*.xlsx binary
+*.zip binary
+# демо-таблицы как из Excel: CRLF и BOM храним байт в байт
+public/mock/*.csv -text

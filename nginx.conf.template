@@ -1,0 +1,96 @@
+# Шаблон: официальный образ nginx подставляет ${SITE_DOMAIN} и ${STATS_ALLOW}, переменные nginx ($host…) не трогает.
+limit_req_zone $binary_remote_addr zone=login:10m rate=5r/m;
+limit_req_zone $binary_remote_addr zone=client_errors:10m rate=30r/m;
+limit_req_status 429;   # по умолчанию 503: фронт показал бы «Ошибка сервера» вместо «подождите»
+
+# Access-лог в JSON с $request_id: если сервис лежит, 502 больше нигде не запишется. Без query: там подписи ссылок.
+log_format json escape=json '{"ts":"$time_iso8601","level":"info","service":"nginx","message":"HTTP-запрос",'
+                            '"trace_id":"$request_id","method":"$request_method","host":"$host","path":"$uri",'
+                            '"status":$status,"duration_s":$request_time,"bytes":$body_bytes_sent,"ip":"$remote_addr"}';
+access_log /dev/stdout json;
+
+# Имена сервисов перечитываются у DNS Docker: без resolve nginx запомнил бы IP при старте, и после пересоздания
+# сервиса деплоем запросы ушли бы на старый адрес, а то и в чужой контейнер.
+resolver 127.0.0.11 valid=10s ipv6=off;
+upstream auth_service    { zone up_auth 64k;    server auth_service:8000 resolve; }
+upstream catalog_service { zone up_catalog 64k; server catalog_service:8000 resolve; }
+upstream admin_service   { zone up_admin 64k;   server admin_service:8000 resolve; }
+upstream import_service  { zone up_import 64k;  server import_service:8000 resolve; }
+upstream minio           { zone up_minio 64k;   server minio:9000 resolve; }
+upstream grafana         { zone up_grafana 64k; server grafana:3000 resolve; }
+
+server_tokens off;
+client_max_body_size 1m;   # больше — только на путях загрузки ниже
+ssl_certificate     /etc/nginx/certs/fullchain.pem;
+ssl_certificate_key /etc/nginx/certs/privkey.pem;
+# если перед nginx стоит прокси вуза: set_real_ip_from <его адрес>; real_ip_header X-Forwarded-For;
+
+server {
+    listen 80 default_server;
+    return 301 https://$host$request_uri;
+}
+
+# сайт: фронт и API на одном origin
+server {
+    listen 443 ssl;
+    server_name ${SITE_DOMAIN};
+    gzip on;
+    gzip_types application/json text/css application/javascript;
+
+    # заголовки — только на уровне server: location со своими заголовками эти не унаследует
+    proxy_set_header Host $host;
+    proxy_set_header X-Request-ID $request_id;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_hide_header X-Request-ID;   # тот же id, что передан сервису: один заголовок, а не два
+    add_header X-Request-ID $request_id always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy same-origin always;
+    add_header Content-Security-Policy "default-src 'self'; img-src 'self' data: https://files.${SITE_DOMAIN}; frame-src https://files.${SITE_DOMAIN}; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+
+    # ответ в формате API: экран входа покажет текст, а не «Ошибка сервера (429)»
+    error_page 429 = @too_many;
+    location @too_many { default_type application/json; return 429 '{"error":{"code":"rate_limited","message":"Слишком много попыток. Подождите минуту"}}'; }
+    location = /api/auth/login     { limit_req zone=login burst=5 nodelay; proxy_pass http://auth_service; }
+    location /api/auth/            { proxy_pass http://auth_service; }
+
+    # загрузки: лимиты = maxBytes из /api/upload-limits; аноним получает 401 до приёма тела
+    location /api/admin/imports                  { auth_request /_auth; client_max_body_size 500m; proxy_request_buffering off; proxy_pass http://import_service; }
+    location ~ ^/api/admin/works/[^/]+/file$     { auth_request /_auth; client_max_body_size 100m; proxy_request_buffering off; proxy_pass http://admin_service; }
+    location ~ ^/api/my/works/[^/]+/materials$   { auth_request /_auth; client_max_body_size 50m; proxy_request_buffering off; proxy_pass http://admin_service; }
+    # свой proxy_set_header: заголовки server сюда не наследуются, для /auth/me они не нужны
+    location = /_auth { internal; proxy_pass http://auth_service/api/auth/me; proxy_pass_request_body off; proxy_set_header Content-Length ""; }
+
+    location /api/admin/templates  { proxy_pass http://import_service; }
+    location /api/admin/exports/   { proxy_buffering off; proxy_pass http://admin_service; }
+    location /api/admin/           { proxy_pass http://admin_service; }
+    location /api/my/              { proxy_pass http://admin_service; }
+    location = /api/client-errors  { limit_req zone=client_errors burst=20; client_max_body_size 16k; proxy_pass http://catalog_service; }
+    location /api/                 { proxy_pass http://catalog_service; }
+    location ~ \.map$              { return 404; }   # sourcemap — для разбора стеков, не для всех
+    location /                     { root /usr/share/nginx/html; try_files $uri /index.html; }
+}
+
+# файлы: presigned-ссылки и фото; путь не переписываем, иначе подпись SigV4 не сойдётся
+server {
+    listen 443 ssl;
+    server_name files.${SITE_DOMAIN};
+    client_max_body_size 1k;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Content-Type-Options nosniff always;
+    location /minio/ { return 404; }   # health, метрики и admin API MinIO
+    location / {
+        limit_except GET HEAD { deny all; }   # снаружи MinIO только читается
+        proxy_set_header Host $host;
+        proxy_pass http://minio;
+    }
+}
+
+# статистика: Grafana только из сети вуза
+server {
+    listen 443 ssl;
+    server_name stats.${SITE_DOMAIN};
+    allow ${STATS_ALLOW};
+    deny all;
+    location / { proxy_set_header Host $host; proxy_pass http://grafana; }
+}

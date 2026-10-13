@@ -1,0 +1,38 @@
+# Бэкап, который молча перестал делаться, ничего не гарантирует: алерт, если строки «backup ok» не было 26 часов.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: backups
+    folder: Репозиторий
+    interval: 1h
+    rules:
+      - uid: backup-missing
+        title: Нет ночного бэкапа
+        condition: C
+        for: 0m
+        noDataState: Alerting
+        execErrState: Error
+        annotations: {summary: "Строки «backup ok» в логах не было 26 часов"}
+        data:
+          - refId: A
+            relativeTimeRange: {from: 93600, to: 0}
+            datasourceUid: loki
+            model: {refId: A, queryType: instant, expr: 'sum(count_over_time({service="backup"} |= "backup ok" [26h])) or vector(0)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}
+      - uid: restore-check-missing
+        title: Нет проверки восстановления
+        condition: C
+        for: 0m
+        noDataState: Alerting
+        execErrState: Error
+        annotations: {summary: "Строки «restore check ok» не было 8 дней"}
+        data:
+          - refId: A
+            relativeTimeRange: {from: 691200, to: 0}
+            datasourceUid: loki
+            model: {refId: A, queryType: instant, expr: 'sum(count_over_time({service="backup"} |= "restore check ok" [8d])) or vector(0)'}
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: lt, params: [1]}}]}

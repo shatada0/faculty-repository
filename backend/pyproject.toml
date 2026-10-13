@@ -1,0 +1,30 @@
+[project]
+name = "faculty-repository-backend"
+version = "0.1.0"
+requires-python = ">=3.14"
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+extend-exclude = ["migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # кириллица в строках и комментариях — норма
+    "S101",                        # assert в тестах
+    "B008",                        # Depends() в аргументах — идиома FastAPI
+]
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 140  # формат режет код на 120; длинные докстринги и SQL терпим до 140
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311"]
+"admin_service/seed.py" = ["S311"]  # детерминированный генератор демо-данных, не криптография
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]

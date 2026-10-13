@@ -1,0 +1,26 @@
+scheme;code;name
+grnti;20.00;Информатика
+grnti;20.19;Информационное обеспечение науки
+grnti;27.41;Вычислительная математика
+grnti;27.43;Теория вероятностей и математическая статистика
+grnti;27.47;Математическая кибернетика
+grnti;28.23;Искусственный интеллект
+grnti;28.29;Системный анализ
+grnti;50.41;Программное обеспечение вычислительных машин
+grnti;14.85;Технические средства обучения
+oecd;1.01;Математика
+oecd;1.02;Компьютерные и информационные науки
+oecd;2.02;Электротехника, электронная техника, информационные технологии
+oecd;5.03;Науки об образовании
+wos;CS-AI;Computer Science, Artificial Intelligence
+wos;CS-IS;Computer Science, Information Systems
+wos;CS-SE;Computer Science, Software Engineering
+wos;CS-IA;Computer Science, Interdisciplinary Applications
+wos;MATH-AP;Mathematics, Applied
+wos;MATH-ID;Mathematics, Interdisciplinary Applications
+asjc;1702;Artificial Intelligence
+asjc;1706;Computer Science Applications
+asjc;1710;Information Systems
+asjc;1712;Software
+asjc;2604;Applied Mathematics
+asjc;2605;Computational Mathematics

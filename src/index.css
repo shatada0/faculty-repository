@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/*
+ * Design: library-catalog look (lists divided by hairlines, square shapes), one sans family throughout
+ * (Montserrat, OFL — a free stand-in for Steam's proprietary Motiva Sans, with Cyrillic)
+ * with a few elements from the university visual code: red accent, uppercase link-buttons, flush number tiles.
+ * Colors: the university's red accent paired with deep navy `brand` for tiles, rules and outlines;
+ * black (`ink`) stays for text, the thin top strip and the footer rule; panels carry a light blue-grey tint.
+ * No gradients, blur, translucency or rounded cards.
+ */
+@theme {
+  --font-sans: "Montserrat", Arial, Helvetica, sans-serif;
+
+  --color-ink: #1a1a1a;
+  --color-ink-2: #4d4d4d;
+  --color-muted: #666666;
+  --color-rule: #d5dde8;
+  --color-field: #828fa1;
+  --color-panel: #eef2f7;
+  --color-panel-2: #e1e8f1;
+  --color-brand: #1f3a5f;
+  --color-brand-light: #c9d6e8;
+  --color-accent: #d42a3d;
+  --color-accent-dark: #b3202f;
+  --color-info: #1f3a5f;
+  --color-ok: #2c6e3f;
+  --color-warn: #8a5a00;
+  --color-warn-bg: #fbf3e2;
+  --color-danger: #b3202f;
+  --color-danger-bg: #fbeaec;
+}
+
+@layer base {
+  html { color-scheme: light; }
+  body { @apply bg-white font-sans text-base text-ink antialiased; }
+  a { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:hover { @apply text-accent; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-brand; }
+  ::placeholder { @apply text-muted; }
+  dialog::backdrop { background: rgb(26 26 26 / 0.5); }
+}

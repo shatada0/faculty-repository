@@ -1,0 +1,85 @@
+# Фронт — в корне, бэкенд — в backend/. Образы с тегом коммита в GitLab Registry; выкатка — ручная кнопка на main.
+stages: [lint, test, build, deploy]
+
+variables:
+  BASE: $CI_REGISTRY_IMAGE/base
+
+backend-lint:
+  stage: lint
+  image: python:3.15-slim
+  script:
+    - cd backend
+    - pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+    - ruff format . --check
+    - ruff check .
+    - pip-licenses --partial-match --fail-on="GPL;AGPL;LGPL;SSPL"   # копилефт не протечёт транзитивно
+    - pip-audit -r requirements.txt
+
+backend-test:
+  stage: test
+  image: python:3.15-slim
+  services: [docker:27-dind]
+  variables: {DOCKER_HOST: "tcp://docker:2375", DOCKER_TLS_CERTDIR: ""}   # testcontainers поднимает Postgres
+  script:
+    - cd backend
+    - pip install --require-hashes -r requirements.txt -r requirements-dev.txt
+    - pytest -q
+
+frontend-test:
+  stage: test
+  image: node:22-alpine
+  script:
+    - npm ci
+    - npm audit --omit=dev --audit-level=high
+    - npm test
+    - npm run build
+
+.docker:
+  image: docker:27
+  services: [docker:27-dind]
+  before_script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+
+base-image:
+  extends: .docker
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [backend/requirements.txt, backend/Dockerfile.base]
+  script:
+    - docker build -f backend/Dockerfile.base -t "$BASE:latest" backend
+    - docker push "$BASE:latest"
+
+images:
+  extends: .docker
+  stage: build
+  rules: [{if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH}]
+  script:
+    - cd backend
+    - |
+      for s in auth_service catalog_service admin_service import_service extraction_worker migrations; do
+        docker build --build-arg BASE_IMAGE="$BASE:latest" -f $s/Dockerfile -t "$CI_REGISTRY_IMAGE/$s:$CI_COMMIT_SHORT_SHA" .
+        docker push "$CI_REGISTRY_IMAGE/$s:$CI_COMMIT_SHORT_SHA"
+      done
+    - MINIO_REF=$(grep '^MINIO_REF=' .env.example | cut -d= -f2) MC_REF=$(grep '^MC_REF=' .env.example | cut -d= -f2)
+    - docker build --build-arg MINIO_REF="$MINIO_REF" --build-arg MC_REF="$MC_REF" -t "$CI_REGISTRY_IMAGE/minio:$CI_COMMIT_SHORT_SHA" minio
+    - docker build --build-arg MINIO_IMAGE="$CI_REGISTRY_IMAGE/minio:$CI_COMMIT_SHORT_SHA" -t "$CI_REGISTRY_IMAGE/backup:$CI_COMMIT_SHORT_SHA" backup
+    - docker build --build-arg VITE_FACULTY_NAME="$FACULTY_NAME" --build-arg VITE_STATS_URL="https://stats.$SITE_DOMAIN/" --build-arg VITE_BUILD="$CI_COMMIT_SHORT_SHA"
+        -t "$CI_REGISTRY_IMAGE/nginx:$CI_COMMIT_SHORT_SHA" ..
+    - for s in minio backup nginx; do docker push "$CI_REGISTRY_IMAGE/$s:$CI_COMMIT_SHORT_SHA"; done
+
+deploy:
+  stage: deploy
+  image: alpine:3
+  rules: [{if: '$CI_COMMIT_BRANCH == "main"', when: manual}]
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - eval "$(ssh-agent -s)" && echo "$DEPLOY_SSH_KEY" | ssh-add -
+  script:
+    - >
+      ssh -o StrictHostKeyChecking=accept-new deploy@$PROD_HOST "cd /opt/repo
+      && git fetch && git checkout --detach $CI_COMMIT_SHA
+      && cd backend
+      && sed -i 's/^IMAGE_TAG=.*/IMAGE_TAG=$CI_COMMIT_SHORT_SHA/' .env
+      && docker compose pull && docker compose up -d --remove-orphans"
+    - curl -fsS https://$SITE_DOMAIN/api/stats > /dev/null

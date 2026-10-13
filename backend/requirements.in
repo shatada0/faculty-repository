@@ -1,0 +1,18 @@
+fastapi
+uvicorn
+uvloop; sys_platform != "win32"
+httptools
+pydantic
+pydantic-settings
+python-multipart
+sqlalchemy[asyncio]
+asyncpg
+alembic
+aio-pika
+aioboto3
+pyjwt[crypto]
+argon2-cffi
+httpx
+openpyxl
+defusedxml
+pypdf

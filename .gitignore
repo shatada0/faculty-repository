@@ -1,0 +1,5 @@
+node_modules
+dist
+.env*.local
+# архив-снимок фронта, не исходники
+*.zip

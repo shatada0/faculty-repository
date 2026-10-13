@@ -1,0 +1,3 @@
+apiVersion: 1
+providers:
+  - {name: repository, folder: Репозиторий, type: file, allowUiUpdates: false, options: {path: /etc/grafana/dashboards}}

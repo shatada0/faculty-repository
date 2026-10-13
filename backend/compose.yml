@@ -1,0 +1,198 @@
+# Сначала базовый образ: docker build -f Dockerfile.base -t project-base . — потом docker compose up -d --build.
+# Секреты — файлы в secrets/ (scripts/dev-secrets.sh), в .env только несекретное: версии, домен, модель.
+
+x-service: &service
+  env_file: .env
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthcheck')"]
+    interval: 10s
+    retries: 6
+  depends_on:
+    postgres: {condition: service_healthy}
+    rabbitmq: {condition: service_healthy}
+    minio-init: {condition: service_completed_successfully}
+    migrations: {condition: service_completed_successfully}
+
+x-build-args: &build-args
+  BASE_IMAGE: ${BASE_IMAGE:-project-base}
+
+x-minio-build: &minio-build
+  build: {context: ./minio, args: {MINIO_REF: "${MINIO_REF}", MC_REF: "${MC_REF}"}}
+  image: ${REGISTRY:-local}/minio:${IMAGE_TAG:-dev}
+
+secrets:
+  jwt_private: {file: ./secrets/jwt_private.pem}
+  jwt_public: {file: ./secrets/jwt_public.pem}
+  db_owner: {file: ./secrets/db_owner}
+  db_auth: {file: ./secrets/db_auth}
+  db_writer: {file: ./secrets/db_writer}
+  db_catalog: {file: ./secrets/db_catalog}
+  db_grafana: {file: ./secrets/db_grafana}
+  db_exporter: {file: ./secrets/db_exporter}
+  db_backup: {file: ./secrets/db_backup}
+  s3_rw: {file: ./secrets/s3_rw}
+  s3_ro: {file: ./secrets/s3_ro}
+  amqp: {file: ./secrets/amqp}
+  grafana_admin: {file: ./secrets/grafana_admin}
+  restic_password: {file: ./secrets/restic_password}
+  restic_repository: {file: ./secrets/restic_repository}
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment: {POSTGRES_USER: app, POSTGRES_DB: app, POSTGRES_PASSWORD_FILE: /run/secrets/db_owner}
+    secrets: [db_owner]
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U app"], interval: 5s, retries: 10}
+    volumes: [pgdata:/var/lib/postgresql/data]
+
+  rabbitmq:
+    image: rabbitmq:4-management
+    restart: unless-stopped
+    env_file: [.env, secrets/rabbitmq.env]   # RABBITMQ_DEFAULT_USER и _PASS; тот же пароль — в secrets/amqp
+    volumes: [./monitoring/rabbitmq_enabled_plugins:/etc/rabbitmq/enabled_plugins:ro, rabbitdata:/var/lib/rabbitmq]
+    healthcheck: {test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"], interval: 10s, retries: 10}
+
+  minio:
+    <<: *minio-build
+    restart: unless-stopped
+    command: minio server /data --console-address :9001
+    env_file: [.env, secrets/minio.env]          # MINIO_ROOT_USER и MINIO_ROOT_PASSWORD
+    environment: {MINIO_PROMETHEUS_AUTH_TYPE: public}   # метрики только внутри сети compose
+    healthcheck: {test: ["CMD", "mc", "ready", "local"], interval: 5s, retries: 10}
+    volumes: [s3data:/data]          # ports нет: снаружи только files.<домен> через nginx
+
+  minio-init:
+    <<: *minio-build
+    entrypoint: ["sh", "/init/init.sh"]
+    env_file: [.env, secrets/minio.env]
+    volumes: [./minio:/init:ro]
+    secrets: [s3_rw, s3_ro]
+    depends_on: {minio: {condition: service_healthy}}
+
+  migrations:                        # владелец схемы: таблицы, роли с паролями из секретов, пустые справочники
+    image: ${REGISTRY:-local}/migrations:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: migrations/Dockerfile, args: *build-args}
+    env_file: .env
+    environment: {SERVICE_NAME: migrations}
+    secrets: [{source: db_owner, target: db_password}, db_auth, db_writer, db_catalog, db_grafana, db_exporter, db_backup]
+    depends_on: {postgres: {condition: service_healthy}}
+
+  auth_service:
+    <<: *service
+    image: ${REGISTRY:-local}/auth_service:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: auth_service/Dockerfile, args: *build-args}
+    environment: {SERVICE_NAME: auth_service, DB_USER: auth}
+    secrets: [{source: db_auth, target: db_password}, jwt_private, jwt_public]
+
+  catalog_service:
+    <<: *service
+    image: ${REGISTRY:-local}/catalog_service:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: catalog_service/Dockerfile, args: *build-args}
+    environment: {SERVICE_NAME: catalog_service, DB_USER: catalog, S3_ACCESS_KEY: app-ro}
+    secrets: [{source: db_catalog, target: db_password}, {source: s3_ro, target: s3_secret_key}]
+
+  admin_service:
+    <<: *service
+    image: ${REGISTRY:-local}/admin_service:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: admin_service/Dockerfile, args: *build-args}
+    environment: {SERVICE_NAME: admin_service, DB_USER: writer, S3_ACCESS_KEY: app-rw}
+    secrets: [{source: db_writer, target: db_password}, {source: s3_rw, target: s3_secret_key}, jwt_public]
+
+  import_service:
+    <<: *service
+    image: ${REGISTRY:-local}/import_service:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: import_service/Dockerfile, args: *build-args}
+    environment: {SERVICE_NAME: import_service, DB_USER: writer, S3_ACCESS_KEY: app-rw}
+    secrets: [{source: db_writer, target: db_password}, {source: s3_rw, target: s3_secret_key},
+              {source: amqp, target: amqp_password}, jwt_public]
+
+  extraction_worker:
+    <<: *service
+    image: ${REGISTRY:-local}/extraction_worker:${IMAGE_TAG:-dev}
+    build: {context: ., dockerfile: extraction_worker/Dockerfile, args: *build-args}
+    environment: {SERVICE_NAME: extraction_worker, S3_ACCESS_KEY: app-ro}
+    secrets: [{source: s3_ro, target: s3_secret_key}, {source: amqp, target: amqp_password}]
+    mem_limit: 2g                    # PDF чужие: зависший разбор не съест хост
+    extra_hosts: ["host.docker.internal:host-gateway"]   # dev: LLM_URL на Ollama или llama.cpp хоста
+    depends_on:
+      rabbitmq: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+      llm: {condition: service_healthy, required: false}   # профиль gpu; без него — внешний LLM_URL
+
+  llm:
+    profiles: [gpu]
+    image: vllm/vllm-openai:${VLLM_VERSION}
+    restart: unless-stopped
+    command: --model ${LLM_MODEL} --revision ${LLM_REVISION} --max-model-len 16384   # без --trust-remote-code
+    deploy: {resources: {reservations: {devices: [{driver: nvidia, count: 1, capabilities: [gpu]}]}}}
+    volumes: [hf_cache:/root/.cache/huggingface]
+    healthcheck: {test: ["CMD", "curl", "-f", "http://localhost:8000/health"], interval: 10s, retries: 60}
+
+  nginx:
+    image: ${REGISTRY:-local}/nginx:${IMAGE_TAG:-dev}
+    build: {context: .., args: {VITE_FACULTY_NAME: "${FACULTY_NAME}", VITE_STATS_URL: "https://stats.${SITE_DOMAIN}/", VITE_BUILD: "${IMAGE_TAG:-dev}"}}
+    restart: unless-stopped
+    environment: {SITE_DOMAIN: "${SITE_DOMAIN}", STATS_ALLOW: "${STATS_ALLOW}"}
+    ports: ["80:80", "443:443"]
+    volumes: [./certs:/etc/nginx/certs:ro]
+    depends_on: [auth_service, catalog_service, admin_service, import_service, minio, grafana]
+
+  loki:
+    image: grafana/loki:${LOKI_VERSION}
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki.yml
+    volumes: [./monitoring/loki.yml:/etc/loki/loki.yml:ro, lokidata:/loki]
+
+  alloy:
+    image: grafana/alloy:${ALLOY_VERSION}
+    restart: unless-stopped
+    command: run /etc/alloy/config.alloy
+    volumes: [./monitoring/config.alloy:/etc/alloy/config.alloy:ro, /var/run/docker.sock:/var/run/docker.sock:ro]
+    depends_on: [loki]
+
+  prometheus:
+    image: prom/prometheus:${PROMETHEUS_VERSION}
+    restart: unless-stopped
+    volumes: [./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro, promdata:/prometheus]
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:${PG_EXPORTER_VERSION}
+    restart: unless-stopped
+    environment: {DATA_SOURCE_URI: "postgres:5432/app?sslmode=disable", DATA_SOURCE_USER: exporter,
+                  DATA_SOURCE_PASS_FILE: /run/secrets/db_exporter}
+    secrets: [db_exporter]
+    depends_on: {migrations: {condition: service_completed_successfully}}
+
+  grafana:
+    image: grafana/grafana:${GRAFANA_VERSION}
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: "https://stats.${SITE_DOMAIN}/"
+    secrets: [grafana_admin, db_grafana]
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on: [loki, prometheus]
+
+  backup:                            # сам не стартует: таймер хоста запускает docker compose run --rm backup
+    profiles: [backup]
+    image: ${REGISTRY:-local}/backup:${IMAGE_TAG:-dev}
+    build: {context: ./backup, args: {MINIO_IMAGE: "${REGISTRY:-local}/minio:${IMAGE_TAG:-dev}"}}
+    secrets: [db_backup, s3_ro, restic_password, restic_repository]
+    volumes: [backupwork:/work]
+    depends_on: [postgres, minio]
+
+volumes:
+  pgdata:
+  rabbitdata:
+  s3data:
+  hf_cache:
+  lokidata:
+  promdata:
+  grafanadata:
+  backupwork:
