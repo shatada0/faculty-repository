@@ -1,0 +1,30 @@
+meta {
+  name: Доклады с материалами
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/works?type=talk&pageSize=100
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+script:post-response {
+  const w = res.body.items.find(w => (w.view.materials || []).length);
+  if (w) {
+    bru.setVar("publicMaterialWorkId", w.id);
+    bru.setVar("publicMaterialId", w.view.materials[0].id);
+  }
+}
+
+tests {
+  test("есть доклад с принятым материалом", function () {
+    expect(bru.getVar("publicMaterialId")).to.be.a("string");
+  });
+}

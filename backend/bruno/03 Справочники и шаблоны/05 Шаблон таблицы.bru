@@ -1,0 +1,24 @@
+meta {
+  name: Шаблон таблицы
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/admin/templates/publication
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("content-type: text/csv", function () {
+    expect(res.headers["content-type"]).to.include("text/csv");
+  });
+  test("content-disposition: attachment", function () {
+    expect(res.headers["content-disposition"]).to.include("attachment");
+  });
+}

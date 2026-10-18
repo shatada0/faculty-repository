@@ -28,7 +28,7 @@ export default function Imports() {
           <Card className="overflow-x-auto">
             <table className="w-full min-w-[40rem] text-sm">
               <thead className="border-b-2 border-brand text-left">
-                <tr><th className="p-3">Файл</th><th className="p-3">Тип</th><th className="p-3">Загружен</th><th className="p-3">Статус</th><th className="p-3 text-right">Заполнено / дубли / ошибки</th></tr>
+                <tr><th className="p-3">Файл</th><th className="p-3">Тип</th><th className="p-3">Загружен</th><th className="p-3">Статус</th><th className="p-3 text-right">Опубликовано / на проверке / дубли / ошибки</th></tr>
               </thead>
               <tbody className="divide-y divide-rule">
                 {q.data.map((i) => (
@@ -40,7 +40,7 @@ export default function Imports() {
                     <td className="p-3"><span className="inline-flex items-center gap-1.5"><TypeIcon type={i.workType} />{workTypePlural[i.workType]}</span></td>
                     <td className="p-3 text-ink-2">{formatDateTime(i.createdAt)}<br /><span className="text-xs">{i.createdBy}</span></td>
                     <td className="p-3"><ImportStatusBadge status={i.status} /></td>
-                    <td className="p-3 text-right tabular-nums">{i.stats.filled} / {i.stats.duplicates} / <span className={i.stats.errors ? 'text-danger' : ''}>{i.stats.errors}</span> из {i.stats.total}</td>
+                    <td className="p-3 text-right tabular-nums">{i.stats.published} / {i.stats.filled} / {i.stats.duplicates} / <span className={i.stats.errors ? 'text-danger' : ''}>{i.stats.errors}</span> из {i.stats.total}</td>
                   </tr>
                 ))}
               </tbody>

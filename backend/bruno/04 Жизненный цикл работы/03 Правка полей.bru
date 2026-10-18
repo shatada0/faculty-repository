@@ -1,0 +1,27 @@
+meta {
+  name: Правка полей
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "keywords": [
+      "bruno",
+      "проверка api"
+    ],
+    "department": "Кафедра информационных систем"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.fieldMeta.keywords.source: eq manual
+  res.body.department: eq Кафедра информационных систем
+}

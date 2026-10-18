@@ -58,6 +58,7 @@ class Direction(Base):
     __tablename__ = "directions"
     code: Mapped[str] = mapped_column(Text, primary_key=True)
     name: Mapped[str] = mapped_column(Text)
+    subjects: Mapped[list[str]] = mapped_column(ARRAY(Text), server_default="{}")  # «grnti:50.41»: рубрики для импорта
 
 
 class Person(Base):
@@ -141,7 +142,7 @@ class ImportItem(Base):
     __tablename__ = "import_items"
     __table_args__ = (
         UniqueConstraint("import_id", "n"),
-        _one_of("status", ("pending", "extracted", "filled", "duplicate", "error")),
+        _one_of("status", ("pending", "extracted", "filled", "published", "duplicate", "error")),
     )
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
     import_id: Mapped[UUID] = mapped_column(ForeignKey("imports.id", ondelete="CASCADE"))

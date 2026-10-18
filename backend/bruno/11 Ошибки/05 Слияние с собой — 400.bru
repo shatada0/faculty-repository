@@ -1,0 +1,22 @@
+meta {
+  name: Слияние с собой — 400
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people/{{personA}}/merge
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fromId": "{{personA}}"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq same_person
+}

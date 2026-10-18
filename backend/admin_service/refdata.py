@@ -7,7 +7,8 @@ Upsert в одной транзакции; строки не удаляются,
 Форматы csv (разделитель «;», первая строка — заголовок):
   journals:    issn;name;lists       — lists через запятую: white2,vak_k1,scopus_q2
   classifiers: scheme;code;name      — scheme: grnti | oecd | wos | asjc
-  directions:  code;name
+  directions:  code;name[;subjects]  — subjects через запятую: grnti:50.41,oecd:1.02 — рубрики, которые импорт
+               ставит ВКР и курсовым этого направления; без колонки рубрики направлений не меняются
 """
 
 import argparse
@@ -29,35 +30,43 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 TABLES: dict[str, tuple[type[Base], list[str]]] = {
     "journals": (Journal, ["issn", "name", "lists"]),
     "classifiers": (Classifier, ["scheme", "code", "name"]),
-    "directions": (Direction, ["code", "name"]),
+    "directions": (Direction, ["code", "name", "subjects"]),
 }
+OPTIONAL = {"subjects"}
 
 
 def read_rows(kind: str, text: str) -> list[dict]:
     _, columns = TABLES[kind]
     rows = list(csv.DictReader(io.StringIO(text.removeprefix("\N{BYTE ORDER MARK}")), delimiter=";"))
-    if rows and set(columns) - set(rows[0]):
-        raise SystemExit(f"В {kind}.csv нужны колонки: {';'.join(columns)}")
+    if rows and set(columns) - OPTIONAL - set(rows[0]):
+        raise SystemExit(f"В {kind}.csv нужны колонки: {';'.join(c for c in columns if c not in OPTIONAL)}")
     out = []
     for row in rows:
-        values = {c: (row.get(c) or "").strip() for c in columns}
-        if kind == "journals":
-            values["lists"] = [x.strip() for x in values["lists"].split(",") if x.strip()]
+        values = {c: (row.get(c) or "").strip() for c in columns if c in row}  # нет колонки — значение не трогаем
+        for c in ("lists", "subjects"):
+            if c in values:
+                values[c] = [x.strip() for x in values[c].split(",") if x.strip()]
         out.append(values)
     return out
 
 
 async def load(kind: str, text: str, *, only_if_empty: bool = False) -> int:
-    model, columns = TABLES[kind]
+    model, _ = TABLES[kind]
     rows = read_rows(kind, text)
     keys = [c.name for c in model.__table__.primary_key.columns]
     async with uow_write_factory() as uow:
         if only_if_empty and await uow.session.scalar(select(func.count()).select_from(model)):
             return 0
+        if kind == "directions":  # опечатка в коде рубрики уронила бы импорт ВКР на внешнем ключе
+            known = {
+                f"{s}:{c}" for s, c in (await uow.session.execute(select(Classifier.scheme, Classifier.code))).all()
+            }
+            if unknown := sorted({x for r in rows for x in r.get("subjects", [])} - known):
+                raise SystemExit(f"Рубрик нет в классификаторах: {', '.join(unknown)}")
         for chunk in range(0, len(rows), 1000):
             stmt = insert(model).values(rows[chunk : chunk + 1000])
             stmt = stmt.on_conflict_do_update(
-                index_elements=keys, set_={c: stmt.excluded[c] for c in columns if c not in keys}
+                index_elements=keys, set_={c: stmt.excluded[c] for c in rows[0] if c not in keys}
             )
             await uow.session.execute(stmt)
     logger.info("Справочник загружен", extra={"kind": kind, "rows": len(rows)})

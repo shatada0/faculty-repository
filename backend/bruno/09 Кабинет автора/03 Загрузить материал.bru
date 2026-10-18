@@ -1,0 +1,26 @@
+meta {
+  name: Загрузить материал
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/my/works/{{myWorkId}}/materials
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  kind: slides
+  file: @file(files/sample.pdf)
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq pending
+  res.body.kind: eq slides
+}
+
+script:post-response {
+  bru.setVar("myMaterialId", res.body.id);
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Связанные доклады
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/related-options?type=talk&author={{personId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+}

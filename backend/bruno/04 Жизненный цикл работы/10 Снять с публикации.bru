@@ -1,0 +1,16 @@
+meta {
+  name: Снять с публикации
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/unpublish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq draft
+}

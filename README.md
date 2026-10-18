@@ -46,7 +46,8 @@ npm run build      # проверка типов + сборка; моки в п�
 - `GET /admin/works/next?after=id&type&importId` → `{ id }` — следующая работа в очереди проверки;
 - `GET /admin/works/related-options?type&author&include` → `{ id, label }[]` — работы с общими авторами для поля «связанный доклад / публикация»;
 - `POST /admin/imports/preview` (multipart: `workType`, `file`) → заголовки, первые 10 строк, `total`, `bad`, `missingColumns`;
-- `GET /admin/imports/:id?status=` — фильтр элементов; в `stats` есть `processed` и `unmatched`;
+- `GET /admin/imports/:id?status=` — фильтр элементов; в `stats` есть `processed`, `unmatched` и `published`;
+- ВКР и курсовые загружаются одним вариантом: `POST /admin/imports` с `kind=archive` принимает поле `file` сколько угодно раз, `.pdf` и `.zip` вперемешку (лимит `upload-limits.archive.maxBytes` — на всю загрузку). Тип каждой работы, ВКР или курсовую (и у курсовой — работа или проект), сервер узнаёт по титульнику; `workType` нужен, только если титульник не помог. Автору без профиля сервер заводит выпускника или студента, если ФИО есть в тексте PDF. Рубрики ставятся по коду направления из справочника (`fieldMeta.subjects.source = 'direction'`). Карточка без `errors` и `issues` и не дубль публикуется сразу (`accessLevel: card_only`, текст закрыт до согласия), у элемента статус `published`; остальные ждут в очереди проверки со статусом `filled`;
 - `GET /admin/templates/:type/columns` → `{ name, required }[]`;
 - `GET /admin/people` принимает `exclude` и находит «Иванов И. И.» по «Иванов Иван Иванович»; люди в ответах `/admin/people` содержат `shortName`;
 - `POST /admin/people` и `PATCH /admin/people/:id` проверяют ФИО и ORCID (400 с текстом ошибки);

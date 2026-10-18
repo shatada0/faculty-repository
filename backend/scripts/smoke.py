@@ -108,9 +108,10 @@ def archive(m: httpx.Client) -> None:
     items = {i["ref"]: i for i in detail["items"]}
     assert items["битый.pdf"]["error"] == "Файл не является PDF"
     good = items["Калинин_ВКР.pdf"]
-    assert good["status"] in ("filled", "duplicate"), good  # повторный прогон находит черновик первого
-    if good["status"] == "filled":
+    assert good["status"] in ("published", "duplicate"), good  # чистая — сразу на сайт; повторный прогон — дубль
+    if good["status"] == "published":
         work = ok(m.get(f"/api/admin/works/{good['workId']}")).json()
+        assert work["status"] == "published" and work["accessLevel"] == "card_only" and work["authors"][0]["personId"]
         assert work["supervisors"][0]["displayName"] == "Никитина Анна Сергеевна", work["supervisors"]
         assert work["direction"]["code"] == "09.03.04" and work["year"] == 2026 and work["pages"] == 64
 

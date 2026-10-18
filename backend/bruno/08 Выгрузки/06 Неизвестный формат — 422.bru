@@ -1,0 +1,15 @@
+meta {
+  name: Неизвестный формат — 422
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/admin/exports/people?format=pdf
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+}

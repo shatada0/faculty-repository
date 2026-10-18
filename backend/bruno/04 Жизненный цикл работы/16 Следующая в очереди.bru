@@ -1,0 +1,21 @@
+meta {
+  name: Следующая в очереди
+  type: http
+  seq: 16
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/next?after={{testWorkId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("ответ { id }", function () {
+    expect(res.body).to.have.property("id");
+  });
+}

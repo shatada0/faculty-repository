@@ -1,0 +1,24 @@
+meta {
+  name: Работы xlsx
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/admin/exports/works?type=publication&status=published
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("content-type: spreadsheetml", function () {
+    expect(res.headers["content-type"]).to.include("spreadsheetml");
+  });
+  test("content-disposition: .xlsx", function () {
+    expect(res.headers["content-disposition"]).to.include(".xlsx");
+  });
+}

@@ -1,0 +1,22 @@
+meta {
+  name: Пустое ФИО — 400
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fullName": " "
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq bad_name
+}

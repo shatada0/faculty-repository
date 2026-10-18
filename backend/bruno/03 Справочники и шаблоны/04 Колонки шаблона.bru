@@ -1,0 +1,22 @@
+meta {
+  name: Колонки шаблона
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/admin/templates/publication/columns
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+}
+
+tests {
+  test("«Авторы» обязательны", function () {
+    expect(res.body.find(c => c.name === "Авторы").required).to.be.true;
+  });
+}

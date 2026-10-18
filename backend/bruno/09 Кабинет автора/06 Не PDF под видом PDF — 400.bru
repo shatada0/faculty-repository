@@ -1,0 +1,20 @@
+meta {
+  name: Не PDF под видом PDF — 400
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/my/works/{{myWorkId}}/materials
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(files/fake.pdf)
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq bad_file
+}

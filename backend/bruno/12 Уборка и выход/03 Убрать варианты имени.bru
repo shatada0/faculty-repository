@@ -1,0 +1,27 @@
+meta {
+  name: Убрать варианты имени
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/people/{{personA}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "aliases": []
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("следующий прогон снова найдёт нераспознанного автора", function () {
+    expect(res.body.aliases).to.not.include("Неизвестнов-Бруно Х. Х.");
+  });
+}

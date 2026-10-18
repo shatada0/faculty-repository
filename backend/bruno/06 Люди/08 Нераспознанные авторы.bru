@@ -1,0 +1,21 @@
+meta {
+  name: Нераспознанные авторы
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/admin/people?unmatched=true
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("автор из таблицы в списке", function () {
+    expect(res.body.items.map(u => u.displayName)).to.include("Неизвестнов-Бруно Х. Х.");
+  });
+}

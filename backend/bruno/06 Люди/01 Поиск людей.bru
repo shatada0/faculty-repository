@@ -1,0 +1,22 @@
+meta {
+  name: Поиск людей
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/admin/people?q=Орлов Д. С.
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+tests {
+  test("находит Орлова по сокращённому ФИО", function () {
+    expect(res.body.items[0].fullName).to.equal("Орлов Дмитрий Сергеевич");
+  });
+}

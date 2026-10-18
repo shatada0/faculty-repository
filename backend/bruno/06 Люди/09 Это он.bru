@@ -1,0 +1,23 @@
+meta {
+  name: Это он
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people/match
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "displayName": "Неизвестнов-Бруно Х. Х.",
+    "personId": "{{personA}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{personA}}
+}

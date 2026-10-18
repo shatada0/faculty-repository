@@ -1,0 +1,23 @@
+meta {
+  name: Ошибка из браузера
+  type: http
+  seq: 17
+}
+
+post {
+  url: {{baseUrl}}/api/client-errors
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "message": "Проверка API из Bruno",
+    "url": "https://localhost/",
+    "build": "bruno"
+  }
+}
+
+assert {
+  res.status: eq 204
+}

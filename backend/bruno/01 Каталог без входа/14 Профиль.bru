@@ -1,0 +1,17 @@
+meta {
+  name: Профиль
+  type: http
+  seq: 14
+}
+
+get {
+  url: {{baseUrl}}/api/people/{{personId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.headline: isString
+  res.body.tabs: isArray
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Опубликовать пачкой
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/bulk
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "ids": [
+      "{{testWorkId}}"
+    ],
+    "action": "publish"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.done: eq 1
+}

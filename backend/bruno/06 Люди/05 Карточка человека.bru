@@ -1,0 +1,16 @@
+meta {
+  name: Карточка человека
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/admin/people/{{personA}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.works: isArray
+}

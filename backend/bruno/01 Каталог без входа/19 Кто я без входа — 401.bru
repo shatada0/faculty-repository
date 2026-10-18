@@ -1,0 +1,15 @@
+meta {
+  name: Кто я без входа — 401
+  type: http
+  seq: 19
+}
+
+get {
+  url: {{baseUrl}}/api/auth/me
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+}

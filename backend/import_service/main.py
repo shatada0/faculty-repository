@@ -52,7 +52,7 @@ async def create_import(
     user: Moderator,
     kind: Annotated[Literal["archive", "table"], Form()],
     workType: Annotated[WorkType, Form()],
-    file: Annotated[UploadFile, File()],
+    file: Annotated[list[UploadFile], File()],  # архив: PDF и zip вперемешку, поле file повторяется
     metaTable: Annotated[UploadFile | None, File()] = None,
 ) -> dict:
     return await service.create(kind, workType, file, metaTable, user)

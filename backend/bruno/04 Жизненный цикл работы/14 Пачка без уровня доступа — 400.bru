@@ -1,0 +1,24 @@
+meta {
+  name: Пачка без уровня доступа — 400
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/bulk
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "ids": [
+      "{{testWorkId}}"
+    ],
+    "action": "access"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

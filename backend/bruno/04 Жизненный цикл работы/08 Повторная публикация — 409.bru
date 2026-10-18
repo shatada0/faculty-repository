@@ -1,0 +1,15 @@
+meta {
+  name: Повторная публикация — 409
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/publish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 409
+}

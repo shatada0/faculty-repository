@@ -1,0 +1,27 @@
+meta {
+  name: Отклонить материал
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{myWorkId}}/materials/{{myMaterialId}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "status": "rejected"
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("статус материала", function () {
+    expect(res.body.materials.find(m => m.id === bru.getVar("myMaterialId")).status).to.equal("rejected");
+  });
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Объединённый профиль ведёт на основной
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/admin/people/{{personB}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.id: eq {{personA}}
+}

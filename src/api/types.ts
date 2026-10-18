@@ -26,7 +26,7 @@ export interface AuthorRef {
 export type WorkType = 'vkr' | 'coursework' | 'publication' | 'talk'
 export type AccessLevel = 'full' | 'card_only' | 'hidden'
 export type WorkStatus = 'draft' | 'published' | 'rejected'
-export type FieldSource = 'table' | 'ai' | 'doi' | 'manual'
+export type FieldSource = 'table' | 'ai' | 'doi' | 'manual' | 'direction'
 export type Language = 'ru' | 'en' | 'other'
 
 // Classifiers as in eLIBRARY (ГРНТИ, ОЕСР), Web of Science categories, Scopus ASJC.
@@ -186,7 +186,7 @@ export interface MyWork { id: string; title: string; kind: string; year: number;
 
 export type ImportKind = 'archive' | 'table'
 export type ImportStatus = 'uploading' | 'processing' | 'done' | 'failed'
-export type ImportItemStatus = 'pending' | 'extracted' | 'filled' | 'duplicate' | 'error'
+export type ImportItemStatus = 'pending' | 'extracted' | 'filled' | 'published' | 'duplicate' | 'error'
 
 export interface Import {
   id: string
@@ -197,7 +197,7 @@ export interface Import {
   status: ImportStatus
   createdAt: string
   createdBy: string
-  stats: { total: number; processed: number; filled: number; duplicates: number; errors: number; unmatched: number }
+  stats: { total: number; processed: number; filled: number; published: number; duplicates: number; errors: number; unmatched: number }
 }
 
 export interface ImportItem {

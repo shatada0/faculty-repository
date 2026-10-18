@@ -1,0 +1,26 @@
+meta {
+  name: Поиск
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/works?q=нейронные сети&sort=relevance&page=1&pageSize=20
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: gt 0
+}
+
+script:post-response {
+  bru.setVar("workId", res.body.items[0].id);
+}
+
+tests {
+  test("морфология: «нейронных» находится по «нейронные»", function () {
+    expect(res.body.items.some(w => /нейрон/i.test(w.title))).to.be.true;
+  });
+}

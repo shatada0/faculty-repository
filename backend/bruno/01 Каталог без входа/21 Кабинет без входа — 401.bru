@@ -1,0 +1,15 @@
+meta {
+  name: Кабинет без входа — 401
+  type: http
+  seq: 21
+}
+
+get {
+  url: {{baseUrl}}/api/my/works
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+}

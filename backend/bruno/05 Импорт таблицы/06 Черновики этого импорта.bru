@@ -1,0 +1,16 @@
+meta {
+  name: Черновики этого импорта
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works?importId={{tableImportId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: eq 1
+}

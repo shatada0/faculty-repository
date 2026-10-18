@@ -1,0 +1,26 @@
+meta {
+  name: Создать публикацию
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "type": "publication"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.status: eq draft
+}
+
+script:post-response {
+  bru.setVar("testWorkId", res.body.id);
+}

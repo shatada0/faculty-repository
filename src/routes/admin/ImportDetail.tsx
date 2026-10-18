@@ -9,7 +9,7 @@ import { formatDateTime, plural } from '@/lib/format'
 import { importItemStatusLabels, workTypePlural } from '@/lib/labels'
 import { ImportStatusBadge } from './Imports'
 
-const itemTone: Record<ImportItemStatus, Tone> = { pending: 'slate', extracted: 'blue', filled: 'green', duplicate: 'amber', error: 'red' }
+const itemTone: Record<ImportItemStatus, Tone> = { pending: 'slate', extracted: 'blue', filled: 'blue', published: 'green', duplicate: 'amber', error: 'red' }
 
 export default function ImportDetail() {
   const { id = '' } = useParams()
@@ -52,7 +52,8 @@ export default function ImportDetail() {
 
       <Tiles items={[
         { value: imp.stats.total, label: 'всего' },
-        { value: imp.stats.filled, label: 'заполнено' },
+        { value: imp.stats.published, label: 'опубликовано' },
+        { value: imp.stats.filled, label: 'на проверке' },
         { value: imp.stats.duplicates, label: plural(imp.stats.duplicates, ['дубль', 'дубля', 'дублей']) },
         { value: imp.stats.errors, label: plural(imp.stats.errors, ['ошибка', 'ошибки', 'ошибок']) },
       ]} />

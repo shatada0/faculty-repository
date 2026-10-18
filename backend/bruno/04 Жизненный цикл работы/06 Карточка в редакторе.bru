@@ -1,0 +1,22 @@
+meta {
+  name: Карточка в редакторе
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("нет ошибок, можно публиковать", function () {
+    expect(res.body.errors).to.eql([]);
+    expect(res.body.actions).to.include("publish");
+  });
+}

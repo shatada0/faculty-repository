@@ -1,0 +1,23 @@
+meta {
+  name: Работа
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/works/{{workId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.view: isDefined
+  res.body.title: isString
+}
+
+tests {
+  test("согласие студента наружу не отдаётся", function () {
+    expect(res.body).to.not.have.property("consent");
+  });
+}

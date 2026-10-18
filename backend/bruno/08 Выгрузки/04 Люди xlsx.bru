@@ -1,0 +1,21 @@
+meta {
+  name: Люди xlsx
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/admin/exports/people
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("content-type: spreadsheetml", function () {
+    expect(res.headers["content-type"]).to.include("spreadsheetml");
+  });
+}

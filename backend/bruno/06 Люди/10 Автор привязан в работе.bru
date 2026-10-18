@@ -1,0 +1,21 @@
+meta {
+  name: Автор привязан в работе
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/{{tableWorkId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("ссылка на человека", function () {
+    expect(res.body.authors.map(a => a.personId)).to.include(bru.getVar("personA"));
+  });
+}

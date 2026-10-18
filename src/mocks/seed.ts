@@ -23,6 +23,7 @@ export const stats = (items: ImportItem[]) => ({
   processed: items.filter((x) => x.status !== 'pending' && x.status !== 'extracted').length,
   unmatched: items.filter((x) => x.unmatchedAuthors?.length).length,
   filled: items.filter((x) => x.status === 'filled').length,
+  published: items.filter((x) => x.status === 'published').length,
   duplicates: items.filter((x) => x.status === 'duplicate').length,
   errors: items.filter((x) => x.status === 'error').length,
 })

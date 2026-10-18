@@ -1,0 +1,17 @@
+meta {
+  name: Статистика
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/stats
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.byType.vkr: gt 0
+  res.body.staff: gt 0
+}

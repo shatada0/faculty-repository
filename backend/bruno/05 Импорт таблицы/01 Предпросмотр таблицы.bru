@@ -1,0 +1,23 @@
+meta {
+  name: Предпросмотр таблицы
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/admin/imports/preview
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  workType: publication
+  file: @file(files/publications.csv)
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: eq 2
+  res.body.bad: eq 1
+  res.body.missingColumns: isEmpty
+}

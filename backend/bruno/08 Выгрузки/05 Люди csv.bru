@@ -1,0 +1,24 @@
+meta {
+  name: Люди csv
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/admin/exports/people?format=csv
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("content-type: text/csv", function () {
+    expect(res.headers["content-type"]).to.include("text/csv");
+  });
+  test("Орлов в выгрузке", function () {
+    expect(String(res.body)).to.include("Орлов Дмитрий Сергеевич");
+  });
+}

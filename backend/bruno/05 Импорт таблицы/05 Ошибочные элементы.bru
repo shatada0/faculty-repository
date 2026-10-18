@@ -1,0 +1,21 @@
+meta {
+  name: Ошибочные элементы
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/admin/imports/{{tableImportId}}?status=error
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("строка без года", function () {
+    expect(res.body.items[0].error).to.equal("Не указан год");
+  });
+}

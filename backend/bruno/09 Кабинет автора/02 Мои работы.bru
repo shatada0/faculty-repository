@@ -1,0 +1,20 @@
+meta {
+  name: Мои работы
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/my/works
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+script:post-response {
+  bru.setVar("myWorkId", res.body.items.find(i => i.canUpload).id);
+}

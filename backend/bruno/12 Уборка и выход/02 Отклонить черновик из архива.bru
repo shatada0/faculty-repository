@@ -1,0 +1,26 @@
+meta {
+  name: Отклонить черновик из архива
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{archiveWorkId}}/reject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "Тест API (Bruno)"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq rejected
+}
+
+script:pre-request {
+  if (!bru.getVar("archiveWorkId")) bru.runner.skipRequest();
+}

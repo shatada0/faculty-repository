@@ -1,0 +1,15 @@
+meta {
+  name: Неизвестный тип шаблона — 400
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/template?type=x
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 400
+}

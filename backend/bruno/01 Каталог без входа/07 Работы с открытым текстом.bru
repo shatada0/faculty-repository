@@ -1,0 +1,27 @@
+meta {
+  name: Работы с открытым текстом
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/works?type=vkr&pageSize=100
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+script:post-response {
+  const w = res.body.items.find(w => w.view.fileButton);
+  if (w) bru.setVar("fileWorkId", w.id);
+}
+
+tests {
+  test("есть ВКР с открытым текстом", function () {
+    expect(bru.getVar("fileWorkId")).to.be.a("string");
+  });
+}

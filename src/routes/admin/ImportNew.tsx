@@ -8,8 +8,8 @@ import { TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, cn } from '@/components/ui'
 
 const VARIANTS = [
-  { kind: 'archive', workType: 'vkr', title: 'ВКР архивом', desc: 'ZIP с файлами работ + таблица сведений (по желанию). Карточки заполнит ИИ.' },
-  { kind: 'archive', workType: 'coursework', title: 'Курсовые архивом', desc: 'ZIP с файлами работ + таблица сведений (по желанию).' },
+  // ВКР или курсовая — сервер узнаёт по титульнику каждого файла, поэтому вариант один
+  { kind: 'archive', workType: 'vkr', title: 'ВКР и курсовые', desc: 'PDF или ZIP, можно пачкой. Поля, авторов и рубрики заполнит сервер; карточки без замечаний сразу публикуются, остальные ждут в «Проверке».' },
   { kind: 'table', workType: 'publication', title: 'Публикации таблицей', desc: 'Файл .xlsx или .csv по шаблону.' },
   { kind: 'table', workType: 'talk', title: 'Выступления таблицей', desc: 'Файл .xlsx или .csv по шаблону.' },
 ] as const
@@ -52,6 +52,7 @@ export default function ImportNew() {
   const qc = useQueryClient()
   const [variant, setVariant] = useState<Variant>(VARIANTS[0])
   const [file, setFile] = useState<File | null>(null)
+  const [files, setFiles] = useState<File[]>([]) // archive: PDFs and ZIPs
   const [fileErr, setFileErr] = useState<string>()
   const [meta, setMeta] = useState<File | null>(null)
   const [metaErr, setMetaErr] = useState<string>()
@@ -67,7 +68,7 @@ export default function ImportNew() {
 
   function choose(v: Variant) {
     setVariant(v)
-    setFile(null); setMeta(null); setPreview(null); setFileErr(undefined); setMetaErr(undefined); setServerErr(undefined)
+    setFile(null); setFiles([]); setMeta(null); setPreview(null); setFileErr(undefined); setMetaErr(undefined); setServerErr(undefined)
   }
 
   async function onTable(f: File | null, err?: string) {
@@ -82,14 +83,15 @@ export default function ImportNew() {
   }
 
   const headersBad = !!preview?.missingColumns.length
-  const canUpload = !!file && !headersBad && progress === null && !(tableFile && !preview)
+  const chosen = isArchive ? files.length > 0 : !!file
+  const canUpload = chosen && !headersBad && progress === null && !(tableFile && !preview)
 
   async function upload() {
-    if (!file) return
+    if (!chosen) return
     const form = new FormData()
     form.append('kind', variant.kind)
     form.append('workType', variant.workType)
-    form.append('file', file)
+    for (const f of isArchive ? files : [file!]) form.append('file', f)
     if (meta) form.append('metaTable', meta)
     abort.current = new AbortController()
     setServerErr(undefined)
@@ -108,7 +110,7 @@ export default function ImportNew() {
     <div className="space-y-6">
       <h1 className="text-4xl font-bold">Новый импорт</h1>
 
-      <fieldset className="grid sm:grid-cols-2">
+      <fieldset className="grid sm:grid-cols-3">
         <legend className="mb-2 font-bold">Что загружаем</legend>
         {VARIANTS.map((v) => (
           <label key={v.workType} className={cn('flex cursor-pointer gap-3 p-5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-brand', variant === v ? 'bg-brand text-white' : 'bg-panel hover:bg-panel-2')}>
@@ -132,8 +134,8 @@ export default function ImportNew() {
 
         {!limits.data ? null : isArchive ? (
           <div className="grid gap-4 md:grid-cols-2">
-            <FileDrop label="Архив с работами" {...limits.data.archive} file={file} error={fileErr}
-              onFile={(f, e) => { setFile(f); setFileErr(e) }} />
+            <FileDrop label="Работы: PDF или ZIP" {...limits.data.archive} multiple files={files} error={fileErr}
+              onFiles={(f, e) => { setFiles(f); setFileErr(e) }} />
             <FileDrop label="Таблица сведений (необязательно)" {...limits.data.table} file={meta} error={metaErr}
               onFile={(f, e) => onTable(f, e)} />
           </div>

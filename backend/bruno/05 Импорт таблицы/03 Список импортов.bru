@@ -1,0 +1,22 @@
+meta {
+  name: Список импортов
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/admin/imports
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isArray
+}
+
+tests {
+  test("новый импорт в списке", function () {
+    expect(res.body.map(i => i.id)).to.include(bru.getVar("tableImportId"));
+  });
+}

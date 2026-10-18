@@ -1,0 +1,24 @@
+meta {
+  name: Загрузить второй материал
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/my/works/{{myWorkId}}/materials
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  kind: data
+  file: @file(files/sample.pdf)
+}
+
+assert {
+  res.status: eq 201
+}
+
+script:post-response {
+  bru.setVar("myMaterial2Id", res.body.id);
+}

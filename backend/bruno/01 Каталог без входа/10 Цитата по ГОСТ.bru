@@ -1,0 +1,16 @@
+meta {
+  name: Цитата по ГОСТ
+  type: http
+  seq: 10
+}
+
+get {
+  url: {{baseUrl}}/api/works/{{workId}}/citation
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body: isJson
+}

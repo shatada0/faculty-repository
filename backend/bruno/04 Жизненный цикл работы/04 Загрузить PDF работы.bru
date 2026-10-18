@@ -1,0 +1,20 @@
+meta {
+  name: Загрузить PDF работы
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/file
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  file: @file(files/sample.pdf)
+}
+
+assert {
+  res.status: eq 200
+  res.body.hasFile: eq true
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Удалить материал на проверке
+  type: http
+  seq: 5
+}
+
+delete {
+  url: {{baseUrl}}/api/my/works/{{myWorkId}}/materials/{{myMaterial2Id}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 204
+}

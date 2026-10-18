@@ -1,0 +1,21 @@
+meta {
+  name: Неизвестный тип работы — 400
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "type": "x"
+  }
+}
+
+assert {
+  res.status: eq 400
+}

@@ -9,9 +9,9 @@ from fastapi import UploadFile
 from sqlalchemy import and_, func, or_, select, update
 
 from admin_service import doi as crossref
-from admin_service.checks import ACTIONS, admin_dict, check_work, errors
 from shared import labels as L
 from shared.auth import SessionUser
+from shared.checks import ACTIONS, admin_dict, check_work, errors
 from shared.config import UPLOAD_LIMITS
 from shared.db.base import now
 from shared.db.uow import UnitOfWork, UnitOfWorkFactory

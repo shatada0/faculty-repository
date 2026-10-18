@@ -1,0 +1,22 @@
+meta {
+  name: Проверка параметров — 422 с полями
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works?pageSize=1000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 422
+  res.body.error.code: eq validation_error
+}
+
+tests {
+  test("поле в ответе", function () {
+    expect(res.body.error.fields[0].field).to.equal("pageSize");
+  });
+}

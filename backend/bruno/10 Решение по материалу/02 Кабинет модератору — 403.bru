@@ -1,0 +1,15 @@
+meta {
+  name: Кабинет модератору — 403
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/my/works
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 403
+}

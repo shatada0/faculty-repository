@@ -1,0 +1,17 @@
+meta {
+  name: Кто я
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/auth/me
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.user.role: eq moderator
+  res.body.user.name: isString
+}

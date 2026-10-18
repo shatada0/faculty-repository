@@ -1,0 +1,22 @@
+meta {
+  name: Отклонить черновик из таблицы
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{tableWorkId}}/reject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "Тест API (Bruno)"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq rejected
+}

@@ -1,0 +1,28 @@
+meta {
+  name: Создать человека
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fullName": "Брунов Тест Тестович",
+    "kind": "external",
+    "affiliation": "Тестовый вуз"
+  }
+}
+
+assert {
+  res.status: eq 201
+  res.body.kind: eq external
+}
+
+script:post-response {
+  bru.setVar("personA", res.body.id);
+}

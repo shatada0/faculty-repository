@@ -1,0 +1,29 @@
+meta {
+  name: Загрузить zip и PDF разом
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/admin/imports
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  kind: archive
+  workType: vkr
+  file: @file(files/vkr.zip)
+  file: @file(files/fake.pdf)
+}
+
+assert {
+  res.status: eq 201
+  res.body.stats.total: eq 3
+  res.body.fileName: eq vkr.zip и ещё 1
+}
+
+script:post-response {
+  bru.setVar("archiveImportId", res.body.id);
+  bru.setVar("archiveTries", 0);
+}

@@ -14,17 +14,17 @@ from fastapi.routing import APIRoute
 from pydantic import ValidationError
 
 from admin_service import api as admin_api
-from admin_service.checks import errors, unsure
 from admin_service.main import app as admin_app
 from auth_service.main import app as auth_app
 from catalog_service.gost import gost_citation
 from catalog_service.view import work_view
-from extraction_worker.extract import ItemError, _confidence, by_regex, extract, norm
+from extraction_worker.extract import ItemError, _confidence, by_regex, extract, norm, work_kind
 from import_service import archive, records
 from import_service import main as import_main
 from import_service.main import app as import_app
 from shared import labels as L
 from shared.auth import SessionUser, _key, issue_token, read_token, require_author, require_moderator
+from shared.checks import errors, unsure
 from shared.names import name_query, parse_name, short_key, short_name
 from shared.tables import csv_line, missing_columns, parse_csv, to_records
 from shared.works import parse_write
@@ -382,3 +382,20 @@ async def test_worker_log_names_failed_stage() -> None:
             with pytest.raises(ItemError):
                 await extract(data, http, log)
             assert log["stage"] == stage
+
+
+def test_work_kind_from_title_page() -> None:
+    assert work_kind("ВЫПУСКНАЯ КВАЛИФИКАЦИОННАЯ РАБОТА БАКАЛАВРА") == {"workType": "vkr"}
+    assert work_kind("Курсовая работа по дисциплине «Базы данных»") == {
+        "workType": "coursework",
+        "courseworkKind": "work",
+    }
+    assert work_kind("КУРСОВОЙ ПРОЕКТ") == {"workType": "coursework", "courseworkKind": "project"}
+    assert work_kind("Дипломная работа") == {"workType": "vkr"}
+    assert work_kind("Отчёт о практике") == {}
+
+
+def test_level_from_direction_code() -> None:
+    assert by_regex("КУРСОВОЙ ПРОЕКТ\n09.04.01 Информатика\nМосква 2026", "")["level"] == "master"
+    assert by_regex("Курсовая работа\n10.05.01 Компьютерная безопасность", "")["level"] == "specialist"
+    assert by_regex("Выпускная работа магистра\n09.03.04", "")["level"] == "master"  # слово важнее кода

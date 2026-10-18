@@ -110,6 +110,7 @@ export const sourceLabels: Record<FieldSource, string> = {
   table: 'таблица',
   ai: 'ИИ',
   doi: 'DOI',
+  direction: 'направление подготовки',
   manual: 'вручную',
 }
 
@@ -129,7 +130,8 @@ export const importStatusLabels: Record<ImportStatus, string> = {
 export const importItemStatusLabels: Record<ImportItemStatus, string> = {
   pending: 'В очереди',
   extracted: 'Текст извлечён',
-  filled: 'Заполнено',
+  filled: 'На проверке',
+  published: 'Опубликовано',
   duplicate: 'Дубль',
   error: 'Ошибка',
 }

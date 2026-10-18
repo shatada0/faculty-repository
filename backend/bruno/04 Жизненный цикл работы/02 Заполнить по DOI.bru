@@ -1,0 +1,24 @@
+meta {
+  name: Заполнить по DOI
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/doi
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "doi": "10.1038/nature14539"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.work.title: eq Deep learning
+  res.body.work.year: eq 2015
+  res.body.work.fieldMeta.venue.source: eq doi
+}

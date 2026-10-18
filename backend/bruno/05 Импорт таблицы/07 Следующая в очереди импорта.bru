@@ -1,0 +1,21 @@
+meta {
+  name: Следующая в очереди импорта
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/next?importId={{tableImportId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("это черновик из таблицы", function () {
+    expect(res.body.id).to.equal(bru.getVar("tableWorkId"));
+  });
+}

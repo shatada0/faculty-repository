@@ -447,7 +447,7 @@ export function fillFromDoi(w: AdminWork, raw: string, overwrite: string[]): Doi
 
 const MB = 1024 * 1024
 export const UPLOAD_LIMITS: UploadLimits = {
-  archive: { accept: ['.zip'], maxBytes: 500 * MB },
+  archive: { accept: ['.zip', '.pdf'], maxBytes: 500 * MB },
   table: { accept: ['.xlsx', '.csv'], maxBytes: 10 * MB },
   workFile: { accept: ['.pdf', '.pptx', '.docx'], maxBytes: 100 * MB },
   material: { accept: ['.pdf', '.pptx', '.docx', '.zip'], maxBytes: 50 * MB },
@@ -721,39 +721,43 @@ export async function previewTable(file: File, type: WorkType): Promise<ImportPr
 export async function createImport(form: FormData, user: string): Promise<MockImport> {
   const kind = form.get('kind') as 'archive' | 'table'
   const workType = form.get('workType') as WorkType
-  const file = form.get('file') as File | null
+  const uploads = form.getAll('file') as File[] // archive: any number of PDFs and ZIPs
+  const file = uploads[0] ?? null
   const metaTable = form.get('metaTable') as File | null
   if (!file) throw new ImportError('Файл не передан')
   const id = `imp-${++db.seq}`
   const imp: MockImport = {
-    id, kind, workType, fileName: file.name, metaTableName: metaTable?.name || undefined, status: 'processing',
+    id, kind, workType, fileName: uploads.length > 1 ? `${file.name} и ещё ${uploads.length - 1}` : file.name, metaTableName: metaTable?.name || undefined, status: 'processing',
     createdAt: now(), createdBy: user, items: [], stats: stats([]),
   }
 
   if (kind === 'archive') {
     const type = workType as 'vkr' | 'coursework'
     const records = metaTable && metaTable.size ? toRecords(await readTable(metaTable), type) : null
-    const n = records?.length || 12
+    const pdfs = uploads.filter((f) => /\.pdf$/i.test(f.name))
+    const n = records?.length || pdfs.length || 12
     const start = Date.now()
     for (let i = 0; i < n; i++) {
       const rec = records?.[i]
       const d = Math.floor(Math.random() * 3)
-      const ref = rec?.['Имя файла'] || `${FAKE_SURNAMES[i % FAKE_SURNAMES.length]}_${type === 'vkr' ? 'ВКР' : 'Курсовая'}_${new Date().getFullYear()}.pdf`
+      const ref = rec?.['Имя файла'] || pdfs[i]?.name || `${FAKE_SURNAMES[i % FAKE_SURNAMES.length]}_${type === 'vkr' ? 'ВКР' : 'Курсовая'}_${new Date().getFullYear()}.pdf`
+      // the server reads the type off the title page; the mock goes by the file name
+      const t: 'vkr' | 'coursework' = !rec && /курсов/i.test(ref) ? 'coursework' : type
       const item: MockItem = { ref, status: 'pending', readyAt: start + 3000 * (1 + Math.floor((i * 5) / n)) }
       if (i === 1) item.result = { status: 'error', error: 'Скан без текстового слоя' }
       else {
         let w: AdminWork
         let unmatchedNames: string[] = []
-        if (rec && !missingInRow(rec, type).length) ({ w, unmatched: unmatchedNames } = studentFromRecord(type, rec, id, d))
+        if (rec && !missingInRow(rec, t).length) ({ w, unmatched: unmatchedNames } = studentFromRecord(t, rec, id, d))
         else {
-          w = gen.studentWork(type, d, new Date().getFullYear(), ++db.seq)
-          w.id = `${type === 'vkr' ? 'vkr' : 'cw'}-${db.seq}`
+          w = gen.studentWork(t, d, new Date().getFullYear(), ++db.seq)
+          w.id = `${t === 'vkr' ? 'vkr' : 'cw'}-${db.seq}`
           Object.assign(w, { originalFileName: ref, publishedAt: undefined }, draftMeta(id, Object.fromEntries(
             ['title', 'authors', 'supervisors', 'year', 'level', 'direction', 'department', 'discipline', 'annotation', 'keywords', 'pages', 'language']
               .map((k) => [k, { source: 'ai' as const, confidence: aiConf() }]),
           )))
         }
-        const dup = i === 3 ? db.works.find((x) => x.type === type && x.status === 'published') : findDuplicate(type, w.title, w.year)
+        const dup = i === 3 ? db.works.find((x) => x.type === t && x.status === 'published') : findDuplicate(t, w.title, w.year)
         if (dup) Object.assign(w, { title: dup.title, duplicateOf: dup.id })
         item.draft = w
         item.result = { status: dup ? 'duplicate' : 'filled', title: w.title, duplicateOf: dup?.id, unmatchedAuthors: unmatchedNames.length ? unmatchedNames : undefined }
@@ -795,6 +799,12 @@ export function advance(imp: MockImport) {
     if (it.status === 'extracted' && it.readyAt! <= t) {
       Object.assign(it, it.result)
       if (it.draft) {
+        // a card without errors or issues is published right away (card only, text closed until consent)
+        const checked = withChecks(it.draft)
+        if (it.result?.status === 'filled' && !checked.errors.length && !checked.issues.length) {
+          Object.assign(it.draft, { status: 'published', publishedAt: now() })
+          it.status = 'published'
+        }
         db.works.push(it.draft)
         it.workId = it.draft.id
         it.draft = undefined

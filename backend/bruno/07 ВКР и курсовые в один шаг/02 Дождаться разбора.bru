@@ -1,0 +1,48 @@
+meta {
+  name: Дождаться разбора
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/admin/imports/{{archiveImportId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+script:post-response {
+  const done = res.body.import.status === "done";
+  const tries = bru.getVar("archiveTries") + 1;
+  bru.setVar("archiveTries", tries);
+  bru.setVar("archiveDone", done);
+  if (!done && tries < 40) {
+    await bru.sleep(3000);
+    bru.runner.setNextRequest("Дождаться разбора");
+  }
+  const pdf = res.body.items.find(i => i.ref === "Калинин_ВКР.pdf");
+  // черновик создаётся и у дубля (с duplicateOf): уборка отклонит любой
+  if (done && pdf && pdf.workId) bru.setVar("archiveWorkId", pdf.workId);
+  bru.setVar("archivePublished", done && pdf && pdf.status === "published");
+}
+
+tests {
+  if (bru.getVar("archiveDone") || bru.getVar("archiveTries") >= 40) {
+    test("разбор закончен за 2 минуты", function () {
+      expect(res.body.import.status).to.equal("done");
+    });
+    test("чистая ВКР опубликована сразу (или это дубль прошлого прогона)", function () {
+      const pdf = res.body.items.find(i => i.ref === "Калинин_ВКР.pdf");
+      expect(["published", "duplicate"]).to.include(pdf.status);
+    });
+    test("битый файл из zip — понятная ошибка", function () {
+      expect(res.body.items.find(i => i.ref === "битый.pdf").error).to.equal("Файл не является PDF");
+    });
+    test("не-PDF, загруженный отдельно, — та же ошибка", function () {
+      expect(res.body.items.find(i => i.ref === "fake.pdf").error).to.equal("Файл не является PDF");
+    });
+  }
+}

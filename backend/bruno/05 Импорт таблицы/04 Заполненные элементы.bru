@@ -1,0 +1,26 @@
+meta {
+  name: Заполненные элементы
+  type: http
+  seq: 4
+}
+
+get {
+  url: {{baseUrl}}/api/admin/imports/{{tableImportId}}?status=filled
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}
+
+script:post-response {
+  bru.setVar("tableWorkId", res.body.items[0].workId);
+}
+
+tests {
+  test("неизвестный автор отмечен", function () {
+    expect(res.body.items[0].unmatchedAuthors).to.include("Неизвестнов-Бруно Х. Х.");
+  });
+}

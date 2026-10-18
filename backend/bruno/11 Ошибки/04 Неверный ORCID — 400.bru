@@ -1,0 +1,22 @@
+meta {
+  name: Неверный ORCID — 400
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/people/{{personA}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "orcid": "123"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq bad_orcid
+}

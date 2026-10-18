@@ -1,0 +1,16 @@
+meta {
+  name: Преподаватели
+  type: http
+  seq: 13
+}
+
+get {
+  url: {{baseUrl}}/api/people?sort=works
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}

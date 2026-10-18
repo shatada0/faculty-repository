@@ -1,0 +1,27 @@
+meta {
+  name: Объединить профили
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people/{{personA}}/merge
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "fromId": "{{personB}}"
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("написание дубля стало вариантом", function () {
+    expect(res.body.aliases).to.include("Брунов Т. Т.");
+  });
+}

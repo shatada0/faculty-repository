@@ -1,0 +1,16 @@
+meta {
+  name: Опубликовать
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/publish
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq published
+}

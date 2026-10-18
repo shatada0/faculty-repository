@@ -1,0 +1,15 @@
+meta {
+  name: После выхода — 401
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/auth/me
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 401
+}

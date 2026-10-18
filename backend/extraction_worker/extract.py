@@ -93,6 +93,7 @@ def select_text(pages: list[str]) -> str:
 
 
 LEVELS = (("магистр", "master"), ("специалист", "specialist"), ("бакалавр", "bachelor"))
+BY_CODE = {"03": "bachelor", "04": "master", "05": "specialist"}
 
 
 def by_regex(title_page: str, text: str) -> dict[str, Any]:
@@ -117,7 +118,22 @@ def by_regex(title_page: str, text: str) -> dict[str, Any]:
         if word in lowered:
             out["level"] = level
             break
+    else:  # на титульнике курсовой уровня обычно нет, а код направления его задаёт: NN.03 бакалавриат, .04, .05
+        if level := BY_CODE.get(out.get("directionCode", "")[3:5]):
+            out["level"] = level
     return out
+
+
+def work_kind(title_page: str) -> dict[str, str]:
+    """ВКР или курсовая — по титульнику: загружать можно вперемешку, тип выбирать не нужно."""
+    lowered = title_page.lower()
+    if re.search(r"курсов\w*\s+проект", lowered):
+        return {"workType": "coursework", "courseworkKind": "project"}
+    if "курсов" in lowered:
+        return {"workType": "coursework", "courseworkKind": "work"}
+    if re.search(r"выпускн\w*\s+квалификационн|дипломн\w*\s+(?:работ|проект)", lowered):
+        return {"workType": "vkr"}
+    return {}  # не понятно — тип из импорта
 
 
 async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCard:
@@ -212,4 +228,5 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
             "confidence": _confidence(value, normalized, name=key in ("authors", "supervisors")),
         }
     fields["language"] = "ru" if re.search(r"[а-яё]", fields.get("title") or text, re.IGNORECASE) else "en"
+    fields |= work_kind(pages[0] if pages else "")  # не поле карточки: в meta не попадает
     return fields, meta

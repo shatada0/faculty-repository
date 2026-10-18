@@ -1,0 +1,16 @@
+meta {
+  name: Работы человека
+  type: http
+  seq: 15
+}
+
+get {
+  url: {{baseUrl}}/api/people/{{personId}}/works?role=author
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.items: isArray
+}

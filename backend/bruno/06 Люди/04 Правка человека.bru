@@ -1,0 +1,22 @@
+meta {
+  name: Правка человека
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/people/{{personA}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "position": "тестировщик API"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.position: eq тестировщик API
+}

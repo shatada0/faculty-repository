@@ -1,0 +1,16 @@
+meta {
+  name: Видна в каталоге
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{baseUrl}}/api/works/{{testWorkId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.title: eq Deep learning
+}

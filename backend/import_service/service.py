@@ -14,13 +14,15 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from import_service import records
-from import_service.archive import ArchiveError, extract_pdfs
+from import_service.archive import MAX_FILES, ArchiveError, display_name, extract_pdfs
 from shared import labels as L
 from shared.auth import SessionUser
 from shared.bus.consumer import Delivery
 from shared.bus.publisher import MessageBusPublisher
+from shared.checks import check_work
 from shared.config import UPLOAD_LIMITS
 from shared.contracts import ImportTopic, ItemCreatedDTO, ItemExtractedDTO
+from shared.db.base import now
 from shared.db.uow import UnitOfWork, UnitOfWorkFactory
 from shared.exceptions import BadRequestError, NotFoundError
 from shared.logging import get_logger
@@ -36,6 +38,8 @@ logger = get_logger(__name__)
 
 TABLE_ERROR = "Не удалось прочитать таблицу. Проверьте, что это .xlsx или .csv."
 CONFIRMED = 0.95  # значение ИИ подтвердилось по базе
+IN_TEXT = 0.85  # значение ИИ дословно есть в тексте PDF: такому ФИО можно завести профиль
+STATS = ("total", "processed", "filled", "published", "duplicates", "errors", "unmatched")
 
 
 def import_dict(imp: Import, stats: dict[str, int]) -> dict:
@@ -71,6 +75,7 @@ def _stats_columns() -> tuple:
         func.count(ImportItem.id).label("total"),
         count(ImportItem.status.not_in(("pending", "extracted"))).label("processed"),
         count(ImportItem.status == "filled").label("filled"),
+        count(ImportItem.status == "published").label("published"),
         count(ImportItem.status == "duplicate").label("duplicates"),
         count(ImportItem.status == "error").label("errors"),
         count(func.cardinality(ImportItem.unmatched_authors) > 0).label("unmatched"),
@@ -125,7 +130,7 @@ class ImportService:
         return [
             import_dict(
                 r.Import,
-                {k: getattr(r, k) for k in ("total", "processed", "filled", "duplicates", "errors", "unmatched")},
+                {k: getattr(r, k) for k in STATS},
             )
             for r in rows
         ]
@@ -166,12 +171,16 @@ class ImportService:
         return {"personId": None, "displayName": name, "kind": fallback}
 
     async def _draft(
-        self, uow: UnitOfWork, imp: Import, fields: dict[str, Any], meta: dict, **extra: Any
+        self, uow: UnitOfWork, imp: Import, fields: dict[str, Any], meta: dict, work_type: str = "", **extra: Any
     ) -> tuple[Work, list[str]]:
-        """Черновик импорта; дубль ищется по (type, название, год). → (работа, нераспознанные авторы)."""
-        model = parse_write(imp.work_type, fields)
+        """Черновик импорта; дубль ищется по (type, название, год). → (работа, нераспознанные авторы).
+
+        work_type — тип, который воркер узнал по титульнику; без него — тип импорта.
+        """
+        work_type = work_type or imp.work_type
+        model = parse_write(work_type, fields)
         w = Work(
-            type=imp.work_type,
+            type=work_type,
             status="draft",
             import_id=imp.id,
             details={},
@@ -189,12 +198,14 @@ class ImportService:
         return w, unmatched
 
     async def create(
-        self, kind: str, work_type: str, file: UploadFile, meta_table: UploadFile | None, user: SessionUser
+        self, kind: str, work_type: str, files: list[UploadFile], meta_table: UploadFile | None, user: SessionUser
     ) -> dict:
         if kind == "table" and work_type in ("publication", "talk"):
-            import_id = await self._create_table(work_type, file, user)
+            if len(files) != 1:
+                raise BadRequestError("Таблица импортируется одним файлом")
+            import_id = await self._create_table(work_type, files[0], user)
         elif kind == "archive" and work_type in ("vkr", "coursework"):
-            import_id = await self._create_archive(work_type, file, meta_table, user)
+            import_id = await self._create_archive(work_type, files, meta_table, user)
         else:
             raise BadRequestError("Таблицей импортируются публикации и доклады, архивом — ВКР и курсовые")
         return (await self.get(import_id, None))["import"]
@@ -250,30 +261,47 @@ class ImportService:
         return imp.id
 
     async def _create_archive(
-        self, work_type: str, file: UploadFile, meta_table: UploadFile | None, user: SessionUser
+        self, work_type: str, files: list[UploadFile], meta_table: UploadFile | None, user: SessionUser
     ) -> UUID:
-        _check_file(file, "archive")
-        if detect_type(await file.read(8)) != "zip":
+        """PDF и zip вперемешку, сколько угодно файлов в одной загрузке: каждый PDF — элемент импорта.
+
+        Тип каждой работы (ВКР или курсовая) воркер узнаёт по титульнику; work_type — на случай, если не узнает.
+        """
+        if sum(f.size or 0 for f in files) > UPLOAD_LIMITS["archive"]["maxBytes"]:
             raise BadRequestError("Файл не подходит по формату или размеру", code="bad_file")
-        await file.seek(0)
         by_file: dict[str, dict] = {}
         if meta_table is not None and meta_table.size:
             for record in to_records(await _table(meta_table), work_type):
                 if record.get("Имя файла"):
                     by_file[record["Имя файла"].strip().lower()] = record
         import_id = uuid.uuid7()
-        await self.storage.put(f"imports/{import_id}/archive.zip", file.file, "application/zip")
+        items = []
         with tempfile.TemporaryDirectory() as tmp:
-            archive = Path(tmp) / "archive.zip"
-            await file.seek(0)
-            await asyncio.to_thread(_copy, file.file, archive)
-            try:
-                pdfs = await asyncio.to_thread(extract_pdfs, archive, Path(tmp))
-            except ArchiveError as e:
-                raise BadRequestError(str(e), code="bad_file") from e
-            items = []
+            pdfs: list[tuple[str, Path]] = []
+            for k, f in enumerate(files):
+                _check_file(f, "archive")
+                if not (f.filename or "").lower().endswith(".zip"):
+                    # .pdf берём как есть: не PDF внутри — воркер отметит элемент ошибкой, как и файл из zip
+                    path = Path(tmp) / f"upload-{k}.pdf"
+                    await asyncio.to_thread(_copy, f.file, path)
+                    pdfs.append((display_name(f.filename or "file.pdf"), path))
+                    continue
+                if detect_type(await f.read(8)) != "zip":
+                    raise BadRequestError("Файл не подходит по формату или размеру", code="bad_file")
+                await f.seek(0)
+                await self.storage.put(f"imports/{import_id}/{k}.zip", f.file, "application/zip")
+                folder = Path(tmp) / f"zip-{k}"
+                folder.mkdir()
+                await f.seek(0)
+                await asyncio.to_thread(_copy, f.file, folder / "archive.zip")
+                try:
+                    pdfs += await asyncio.to_thread(extract_pdfs, folder / "archive.zip", folder)
+                except ArchiveError as e:
+                    raise BadRequestError(f"{f.filename}: {e}", code="bad_file") from e
+            if len(pdfs) > MAX_FILES:
+                raise BadRequestError(f"За один раз — не больше {MAX_FILES} работ", code="bad_file")
             for n, (name, path) in enumerate(pdfs, start=1):
-                key = f"imports/{import_id}/items/{n}.pdf"  # имя из архива в ключ не попадает
+                key = f"imports/{import_id}/items/{n}.pdf"  # имя файла в ключ не попадает
                 with path.open("rb") as f:
                     await self.storage.put(key, f, "application/pdf")
                 items.append(
@@ -286,13 +314,14 @@ class ImportService:
                         meta=by_file.get(name.lower()),
                     )
                 )
+        names = [f.filename or "file" for f in files]
         async with self.uow_factory() as uow:
             uow.session.add(
                 Import(
                     id=import_id,
                     kind="archive",
                     work_type=work_type,
-                    file_name=file.filename or "archive.zip",
+                    file_name=names[0] if len(names) == 1 else f"{names[0]} и ещё {len(names) - 1}",
                     meta_table_name=meta_table.filename if meta_table is not None and meta_table.size else None,
                     status="processing",
                     created_by=user.name,
@@ -305,7 +334,7 @@ class ImportService:
             await self.publisher.publish(
                 ImportTopic.ITEM_CREATED, ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=work_type)
             )
-        logger.info("Архив принят", extra={"import_id": str(import_id), "files": len(items)})
+        logger.info("Архив принят", extra={"import_id": str(import_id), "uploads": len(files), "files": len(items)})
         return import_id
 
     # ---------- результат воркера ----------
@@ -339,8 +368,12 @@ class ImportService:
     async def _fill_item(
         self, uow: UnitOfWork, imp: Import, item: ImportItem, ai: dict[str, Any], ai_meta: dict
     ) -> None:
+        """Черновик из ответа воркера; без замечаний — сразу опубликованная карточка (текст закрыт до согласия)."""
+        work_type = ai.get("workType") if ai.get("workType") in ("vkr", "coursework") else imp.work_type
         meta = {k: dict(v) for k, v in ai_meta.items()}
         await self._confirm(uow, ai, meta)
+        department = ai.get("department") if meta.get("department", {}).get("confidence") == CONFIRMED else None
+        sure = meta.get("authors", {}).get("confidence", 0) >= IN_TEXT  # ФИО есть в тексте — не выдумка модели
         fields: dict[str, Any] = {
             "title": ai.get("title"),
             "annotation": ai.get("annotation"),
@@ -352,29 +385,36 @@ class ImportService:
             "level": ai.get("level"),
             "language": ai.get("language") or "ru",
             "direction": {"code": ai.get("directionCode"), "name": ai.get("directionName")},
-            "authors": [await self._ref(uow, n, "student") for n in ai.get("authors") or []],
+            "authors": [
+                await (self._student(uow, n, work_type, department) if sure else self._ref(uow, n, "student"))
+                for n in ai.get("authors") or []
+            ],
             "supervisors": [await self._ref(uow, n, "staff") for n in ai.get("supervisors") or []],
             "accessLevel": "card_only",
         }
+        if work_type == "coursework":
+            fields["kind"] = ai.get("courseworkKind") or "work"
         if "directionCode" in meta:
             meta["direction"] = meta.pop("directionCode")
         record = item.meta
-        if record and not missing_in_row(record, imp.work_type):
+        if record and not missing_in_row(record, work_type):
             # таблица сведений надёжнее ИИ: её значения поверх
-            table_fields, table_meta = records.student(record, imp.work_type)
+            table_fields, table_meta = records.student(record, work_type)
             fields |= table_fields
-            fields["authors"] = [await self._student(uow, record, imp.work_type)]
+            fields["authors"] = [await self._student(uow, record["ФИО автора"], work_type, record.get("Кафедра"))]
             fields["supervisors"] = [await self._ref(uow, record["ФИО руководителя"], "staff")]
             meta |= table_meta
-        if imp.work_type == "coursework":
-            fields.setdefault("kind", "work")
+        code = fields["direction"].get("code")
+        if code and (d := await uow.session.get(Direction, code)) and d.subjects:
+            fields["subjects"] = [dict(zip(("scheme", "code"), s.split(":", 1), strict=True)) for s in d.subjects]
+            meta["subjects"] = {"source": "direction"}
         work_id = uuid.uuid7()
         file_key = f"works/{work_id}/{uuid.uuid4()}.pdf"
         await self.storage.copy(item.file_key, file_key)  # imports/ удалит lifecycle через 30 дней
         try:
             async with uow.session.begin_nested():
                 w, unmatched = await self._draft(
-                    uow, imp, fields, meta, id=work_id, file_key=file_key, original_file_name=item.ref
+                    uow, imp, fields, meta, work_type, id=work_id, file_key=file_key, original_file_name=item.ref
                 )
         except ValidationError as e:
             item.status, item.error = "error", _bad_value(e)
@@ -390,18 +430,28 @@ class ImportService:
             )
         item.status = "duplicate" if w.duplicate_of else "filled"
         item.work_id, item.duplicate_of, item.title, item.unmatched_authors = w.id, w.duplicate_of, w.title, unmatched
+        if w.duplicate_of:
+            return
+        # те же проверки, что у кнопки «Опубликовать», плюс ни одного замечания; run_sync — ленивые связи новой работы
+        errs, issues = await uow.session.run_sync(lambda _: check_work(w))
+        if not errs and not issues:
+            w.status, w.published_at, item.status = "published", now(), "published"
+            logger.info(
+                "Опубликовано без модератора", extra={"audit": True, "work_id": str(w.id), "item_id": str(item.id)}
+            )
 
-    async def _student(self, uow: UnitOfWork, record: dict[str, str], work_type: str) -> dict:
-        """Автор из таблицы сведений: найден — ссылка, нет — новый студент или выпускник с этим ФИО."""
-        full_name = record["ФИО автора"].strip()
+    async def _student(self, uow: UnitOfWork, full_name: str, work_type: str, department: str | None) -> dict:
+        """Автор ВКР или курсовой: найден — ссылка, нет — новый выпускник (ВКР) или студент с этим ФИО."""
+        full_name = full_name.strip()
         person = await self.people.match_exact(uow, full_name)
         if person is None:
             person = Person(id=uuid.uuid7(), kind="graduate" if work_type == "vkr" else "student", full_name=full_name)
-            await self.works.ensure_department(uow, record.get("Кафедра"))
-            person.department = record.get("Кафедра") or None
+            await self.works.ensure_department(uow, department)
+            person.department = department or None
             add_name(person, full_name)
             add_name(person, short_name(full_name))
             uow.session.add(person)
+            logger.info("Профиль студента создан", extra={"person_id": str(person.id)})
         return {"personId": str(person.id), "displayName": short_name(person.full_name), "kind": person.kind}
 
     async def _confirm(self, uow: UnitOfWork, ai: dict[str, Any], meta: dict) -> None:

@@ -239,7 +239,7 @@ async def test_table_import(demo: dict) -> None:
     )
     service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
     file = UploadFile(io.BytesIO(rows.encode()), filename="pubs.csv", size=len(rows.encode()))
-    imp = await service.create("table", "publication", file, None, demo["user"])
+    imp = await service.create("table", "publication", [file], None, demo["user"])
     assert imp["status"] == "done"
     detail = await service.get(uuid.UUID(imp["id"]), None)
     statuses = [(i["ref"], i["status"], i.get("error")) for i in detail["items"]]
@@ -253,6 +253,7 @@ async def test_table_import(demo: dict) -> None:
         "total": 3,
         "processed": 3,
         "filled": 1,
+        "published": 0,
         "duplicates": 0,
         "errors": 2,
         "unmatched": 1,
@@ -267,7 +268,7 @@ async def test_archive_item_from_worker(demo: dict) -> None:
     )
     items = [
         ImportItem(id=uuid.uuid7(), import_id=imp.id, n=n, ref=f"{n}.pdf", file_key=f"imports/{imp.id}/items/{n}.pdf")
-        for n in (1, 2)
+        for n in (1, 2, 3)
     ]
     for it in items:
         storage.objects[it.file_key] = b"%PDF-1.4"
@@ -285,17 +286,33 @@ async def test_archive_item_from_worker(demo: dict) -> None:
         "level": "bachelor",
     }
     meta = {k: {"source": "ai", "confidence": 0.85} for k in fields}
-    await service.on_extracted(ItemExtractedDTO(item_id=items[0].id, fields=fields, field_meta=meta), DELIVERY)
+    clean = ItemExtractedDTO(item_id=items[0].id, fields=fields | {"workType": "vkr"}, field_meta=meta)
+    await service.on_extracted(clean, DELIVERY)
     await service.on_extracted(ItemExtractedDTO(item_id=items[0].id, error="повтор"), DELIVERY)  # идемпотентно
     detail = await service.get(imp.id, None)
-    assert detail["import"]["status"] == "processing" and detail["items"][0]["status"] == "filled"
+    assert detail["import"]["status"] == "processing" and detail["items"][0]["status"] == "published"
     await service.on_extracted(ItemExtractedDTO(item_id=items[1].id, error="Скан без текстового слоя"), DELIVERY)
+    # курсовой проект в том же импорте; ФИО автора модель не взяла из текста — профиль не заводим, карточка ждёт модератора
+    guessed = meta | {"authors": {"source": "ai", "confidence": 0.4}}
+    project = fields | {"title": "Курсовой проект о графах", "authors": ["Сидоров С. С."]}
+    project |= {"workType": "coursework", "courseworkKind": "project"}
+    await service.on_extracted(ItemExtractedDTO(item_id=items[2].id, fields=project, field_meta=guessed), DELIVERY)
     detail = await service.get(imp.id, None)
     assert detail["import"]["status"] == "done" and detail["items"][1]["error"] == "Скан без текстового слоя"
+    assert detail["import"]["stats"]["published"] == 1 and detail["import"]["stats"]["filled"] == 1
+
     work = await works().get(uuid.UUID(detail["items"][0]["workId"]))
+    assert work["status"] == "published" and work["accessLevel"] == "card_only" and work["issues"] == []
     assert work["fieldMeta"]["supervisors"]["confidence"] == 0.95  # подтверждено по базе
     assert work["direction"] == {"code": "09.03.02", "name": "Информационные системы и технологии"}
-    assert work["hasFile"] and work["issues"] == ["Не распознан автор: Петров Пётр Петрович"]
+    assert work["authors"][0]["kind"] == "graduate" and work["authors"][0]["personId"]  # профиль заведён сам
+    assert {(x["scheme"], x["code"]) for x in work["subjects"]} == {("grnti", "20.00"), ("oecd", "1.02")}
+    assert work["fieldMeta"]["subjects"] == {"source": "direction"}
+    assert work["hasFile"]
+
+    draft = await works().get(uuid.UUID(detail["items"][2]["workId"]))
+    assert draft["status"] == "draft" and draft["type"] == "coursework" and draft["kind"] == "project"
+    assert draft["issues"] == ["ИИ не уверен: Авторы", "Не распознан автор: Сидоров С. С."]
 
 
 async def test_db_roles_have_only_their_rights(demo: dict) -> None:

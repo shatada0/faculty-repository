@@ -1,0 +1,16 @@
+meta {
+  name: Нет такой работы — 404
+  type: http
+  seq: 18
+}
+
+get {
+  url: {{baseUrl}}/api/works/00000000-0000-7000-8000-000000000000
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 404
+  res.body.error.code: eq not_found
+}

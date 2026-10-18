@@ -1,0 +1,24 @@
+meta {
+  name: Работы csv
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/admin/exports/works?type=vkr&format=csv
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("content-type: text/csv", function () {
+    expect(res.headers["content-type"]).to.include("text/csv");
+  });
+  test("колонки шаблона ВКР", function () {
+    expect(String(res.body)).to.include("Степень руководителя");
+  });
+}

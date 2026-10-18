@@ -1,0 +1,17 @@
+meta {
+  name: Лимиты загрузки
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/upload-limits
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.archive.maxBytes: gt 0
+  res.body.material.maxBytes: gt 0
+}

@@ -1,0 +1,16 @@
+meta {
+  name: Ссылка на PDF работы
+  type: http
+  seq: 5
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/file
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.url: contains files.
+}

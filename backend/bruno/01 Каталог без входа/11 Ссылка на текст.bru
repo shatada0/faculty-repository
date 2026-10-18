@@ -1,0 +1,17 @@
+meta {
+  name: Ссылка на текст
+  type: http
+  seq: 11
+}
+
+get {
+  url: {{baseUrl}}/api/works/{{fileWorkId}}/file
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.url: contains files.
+  res.body.expiresAt: isString
+}

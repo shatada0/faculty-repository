@@ -1,0 +1,39 @@
+meta {
+  name: Карточка из архива
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/{{archiveWorkId}}
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq published
+  res.body.accessLevel: eq card_only
+  res.body.type: eq vkr
+  res.body.direction.code: eq 09.03.04
+  res.body.year: eq 2026
+  res.body.pages: eq 64
+  res.body.fieldMeta.subjects.source: eq direction
+}
+
+script:pre-request {
+  if (!bru.getVar("archivePublished")) bru.runner.skipRequest();  // дубль: поля не сверяем
+}
+
+tests {
+  test("руководитель подтверждён по базе", function () {
+    expect(res.body.supervisors[0].displayName).to.equal("Никитина Анна Сергеевна");
+    expect(res.body.fieldMeta.supervisors.confidence).to.equal(0.95);
+  });
+  test("автор связан с профилем", function () {
+    expect(res.body.authors[0].personId).to.be.a("string");
+  });
+  test("рубрики по направлению 09.03.04", function () {
+    expect(res.body.subjects.map(s => s.scheme + ":" + s.code)).to.have.members(["grnti:50.41", "oecd:1.02"]);
+  });
+}

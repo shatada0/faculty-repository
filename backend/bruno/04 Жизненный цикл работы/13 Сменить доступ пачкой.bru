@@ -1,0 +1,26 @@
+meta {
+  name: Сменить доступ пачкой
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/bulk
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "ids": [
+      "{{testWorkId}}"
+    ],
+    "action": "access",
+    "accessLevel": "card_only"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.done: eq 1
+}

@@ -1,0 +1,23 @@
+meta {
+  name: Отклонить
+  type: http
+  seq: 18
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{testWorkId}}/reject
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "reason": "Тестовая работа из Bruno"
+  }
+}
+
+assert {
+  res.status: eq 200
+  res.body.status: eq rejected
+  res.body.rejectReason: eq Тестовая работа из Bruno
+}

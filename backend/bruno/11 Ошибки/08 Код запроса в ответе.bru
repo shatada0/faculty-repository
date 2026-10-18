@@ -1,0 +1,21 @@
+meta {
+  name: Код запроса в ответе
+  type: http
+  seq: 8
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/next
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("X-Request-ID", function () {
+    expect(res.headers["x-request-id"]).to.match(/^[0-9a-f]{32}$/);
+  });
+}

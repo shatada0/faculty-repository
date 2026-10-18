@@ -1,0 +1,16 @@
+meta {
+  name: Шаблон новой работы
+  type: http
+  seq: 6
+}
+
+get {
+  url: {{baseUrl}}/api/admin/works/template?type=publication
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.type: eq publication
+}
