@@ -64,6 +64,9 @@ class Storage:
         async with obj["Body"] as stream:
             return await stream.read()
 
+    async def size(self, key: str) -> int:
+        return (await self._client.head_object(Bucket=self.bucket, Key=key))["ContentLength"]
+
     async def stream(self, key: str) -> AsyncIterator[bytes]:
         """Объект кусками по 1 МБ: zip-выгрузка не держит файл в памяти целиком."""
         body = (await self._client.get_object(Bucket=self.bucket, Key=key))["Body"]

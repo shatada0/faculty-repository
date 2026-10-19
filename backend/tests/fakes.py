@@ -16,6 +16,9 @@ class FakeStorage:
     async def get(self, key: str) -> bytes:
         return self.objects[key]
 
+    async def size(self, key: str) -> int:
+        return len(self.objects[key])
+
     async def stream(self, key: str) -> AsyncIterator[bytes]:
         yield self.objects.get(key, b"%PDF-1.4 demo")
 

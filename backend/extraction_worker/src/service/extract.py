@@ -8,8 +8,10 @@ import time
 from typing import Annotated, Any
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
+from extraction_worker.src.service import pdf_text
+from extraction_worker.src.service.pdf_text import PASSWORD_EXIT
 from shared.config import llm_config
 from shared.logging import get_logger
 from shared.people.names import parse_name
@@ -31,17 +33,22 @@ class LLMUnavailable(Exception):
     """LLM-сервер недоступен — временная ошибка, повтор через очередь."""
 
 
-Name = Annotated[str, Field(max_length=200)]
+def cut(n: int) -> BeforeValidator:
+    """Лимит в схеме — для грамматики сервера; не всякая грамматика его держит — обрезаем, а не теряем карточку."""
+    return BeforeValidator(lambda v: v[:n] if isinstance(v, str | list) else v)
+
+
+Name = Annotated[str, cut(200), Field(max_length=200)]
 
 
 class ExtractedCard(BaseModel):
     """Поля карточки, которые не достаются регулярками. max_length — скрытый текст в PDF не раздует ответ."""
 
-    title: str | None = Field(None, max_length=500)
-    authors: list[Name] = Field(default_factory=list, max_length=10)
-    supervisors: list[Name] = Field(default_factory=list, max_length=5)
-    department: str | None = Field(None, max_length=300)
-    annotation: str | None = Field(None, max_length=3000)
+    title: Annotated[str | None, cut(500)] = Field(None, max_length=500)
+    authors: Annotated[list[Name], cut(10)] = Field(default_factory=list, max_length=10)
+    supervisors: Annotated[list[Name], cut(5)] = Field(default_factory=list, max_length=5)
+    department: Annotated[str | None, cut(300)] = Field(None, max_length=300)
+    annotation: Annotated[str | None, cut(3000)] = Field(None, max_length=3000)
 
 
 # Все поля обязательные (значения — null или []): иначе грамматика Ollama даёт модели закрыть объект после
@@ -62,14 +69,18 @@ def norm(s: str) -> str:
     return " ".join(s.lower().replace("ё", "е").split())
 
 
+def dehyphen(page: str) -> str:
+    """«интернет-\nмагазинов», «k-\nmeans» — перенос внутри слова, а не два слова."""
+    return re.sub(r"(\w)-\n(?=\w)", r"\1-", page)
+
+
 async def pdf_pages(data: bytes) -> list[str]:
     """Текст первых страниц в подпроцессе: без shell, со списком аргументов и таймаутом."""
     if not data.startswith(b"%PDF-"):
         raise ItemError("Файл не является PDF")
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
-        "-m",
-        "extraction_worker.src.service.pdf_text",
+        pdf_text.__file__,  # файлом, а не -m: иначе подпроцесс импортирует пакет воркера с httpx и конфигом
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -77,9 +88,13 @@ async def pdf_pages(data: bytes) -> list[str]:
     try:
         out, err = await asyncio.wait_for(proc.communicate(data), PDF_TIMEOUT)
     except TimeoutError:
-        proc.kill()
-        await proc.wait()
         raise ItemError("Файл не удалось разобрать") from None
+    finally:  # и при отмене снаружи (таймаут элемента, остановка): иначе pypdf крутится сиротой
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+    if proc.returncode == PASSWORD_EXIT:
+        raise ItemError("PDF защищён паролем")
     if proc.returncode != 0:
         logger.warning("pypdf упал", extra={"stderr": err.decode(errors="replace")[-1000:]})
         raise ItemError("Файл не удалось разобрать")
@@ -133,6 +148,11 @@ def caps_keywords(text: str) -> list[str] | None:
     return None
 
 
+# Конец списка: пустая строка, точка в конце строки или новая фраза («\nОбъектом …») не после запятой.
+KEYWORDS = re.compile(
+    r"ключевые слова\s*[:\-–—]\s*(.+?)(?:\n\s*\n|\.\s*\n|(?<![,;-])[ \t]*\n(?=[ \t]*[А-ЯЁA-Z][а-яёa-z])|$)",
+    re.IGNORECASE | re.DOTALL,
+)
 VOLUME = re.compile(r"\bсодержит\s+\d+\s*(?:с\.|стр)|^\s*ключевые слова", re.IGNORECASE)
 
 
@@ -145,43 +165,41 @@ def clean_annotation(text: str | None) -> str | None:
 
 
 def by_regex(title_page: str, text: str) -> dict[str, Any]:
-    """Что берётся без LLM: код направления, год, страницы, ключевые слова, уровень, профиль."""
+    """Что берётся без LLM: код направления, год, страницы, ключевые слова, уровень, профиль.
+
+    text начинается с title_page (select_text), переносы в обоих уже склеены (dehyphen).
+    """
     out: dict[str, Any] = {}
-    text = re.sub(r"(\w)-\n(?=\w)", r"\1-", text)  # «k-\nmeans» — перенос внутри слова, а не два слова
     if m := re.search(r"\b\d{2}\.\d{2}\.\d{2}\b", title_page):
         out["directionCode"] = m[0]
     if years := re.findall(r"\b(19[89]\d|20\d{2})\b(?:\s*г\.?)?\s*$", title_page.strip(), re.MULTILINE):
         out["year"] = int(years[-1])  # «Москва 2026» внизу титульника
     if m := re.search(r"(?:содержит|объ[её]м[а-я]*)\D{0,40}?(\d{1,4})\s*(?:с\.|стр)", text, re.IGNORECASE):
         out["pages"] = int(m[1])
-    if m := re.search(r"ключевые слова\s*[:\-–—]\s*(.+?)(?:\n\s*\n|\.\s*\n|$)", text, re.IGNORECASE | re.DOTALL):
+    if m := KEYWORDS.search(text):
         out["keywords"] = [k.strip(" .").lower() for k in re.split(r"[,;]", " ".join(m[1].split())) if k.strip(" .")][
             :15
         ]
-    elif caps := caps_keywords(text):  # список капсом в реферате
+    elif caps := caps_keywords(text[len(title_page) :]):  # капсом в реферате; ФИО капсом на титульнике — не они
         out["keywords"] = caps
     if found := profile(title_page):
         out["profile"] = found
+    # Код направления задаёт уровень по классификатору: NN.03 бакалавриат, .04, .05. Слово «магистр» бывает
+    # и в регалиях руководителя — по нему только без кода.
     lowered = title_page.lower()
-    for word, level in LEVELS:
-        if word in lowered:
-            out["level"] = level
-            break
-    else:  # на титульнике курсовой уровня обычно нет, а код направления его задаёт: NN.03 бакалавриат, .04, .05
-        if level := BY_CODE.get(out.get("directionCode", "")[3:5]):
-            out["level"] = level
+    if level := BY_CODE.get(out.get("directionCode", "")[3:5]) or next((v for w, v in LEVELS if w in lowered), None):
+        out["level"] = level
     return out
 
 
 def work_kind(title_page: str) -> dict[str, str]:
     """ВКР или курсовая — по титульнику: загружать можно вперемешку, тип выбирать не нужно."""
     lowered = title_page.lower()
-    if re.search(r"курсов\w*\s+проект", lowered):
-        return {"workType": "coursework", "courseworkKind": "project"}
-    if "курсов" in lowered:
-        return {"workType": "coursework", "courseworkKind": "work"}
+    # ВКР первой, курсовая — только «курсовая работа/проект»: в темах бывают «онлайн-курсов», «курсов валют»
     if re.search(r"выпускн\w*\s+квалификационн|дипломн\w*\s+(?:работ|проект)", lowered):
         return {"workType": "vkr"}
+    if m := re.search(r"курсов\w*\s+(работ|проект)", lowered):
+        return {"workType": "coursework", "courseworkKind": "project" if m[1] == "проект" else "work"}
     return {}  # не понятно — тип из импорта
 
 
@@ -207,12 +225,12 @@ async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCar
             },
             timeout=llm_config.timeout_seconds,
         )
-    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.RemoteProtocolError) as e:
-        logger.warning("LLM-сервер недоступен", extra=log | {"url": llm_config.url, "error": repr(e)})
-        raise LLMUnavailable(repr(e)) from e
-    except httpx.TimeoutException as e:
+    except (httpx.ReadTimeout, httpx.WriteTimeout) as e:  # сервер жив, но не успел: повтор упрётся в то же
         logger.warning("LLM: таймаут", extra=log | {"url": llm_config.url, "timeout": llm_config.timeout_seconds})
         raise ItemError("ИИ не ответил") from e
+    except httpx.TransportError as e:  # не подключились или соединение оборвалось: сервер перезапускается
+        logger.warning("LLM-сервер недоступен", extra=log | {"url": llm_config.url, "error": repr(e)})
+        raise LLMUnavailable(repr(e)) from e
     ctx = log | {
         "url": llm_config.url,
         "model": llm_config.model,
@@ -225,13 +243,19 @@ async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCar
     if response.status_code != 200:
         logger.error("LLM отклонил запрос", extra=ctx | {"body": response.text[:500]})
         raise ItemError("ИИ не ответил")
-    content = ""
+    content, finish = "", None
     try:
-        content = response.json()["choices"][0]["message"]["content"]
+        choice = response.json()["choices"][0]
+        finish = choice.get("finish_reason")  # length — ответ обрезан по max_tokens
+        content = choice["message"]["content"] or ""  # null — все токены ушли на рассуждения
         return ExtractedCard.model_validate_json(content)
-    except (KeyError, IndexError, ValueError, ValidationError) as e:
+    except (KeyError, IndexError, TypeError, AttributeError, ValueError, ValidationError) as e:
         log["stage"] = "parse"
-        logger.warning("Ответ модели не разобран", extra=ctx | {"stage": "parse", "raw": content[:1000]})
+        # Сам ответ в лог не пишем: в нём ФИО и аннотация.
+        logger.warning(
+            "Ответ модели не разобран",
+            extra=ctx | {"stage": "parse", "finish_reason": finish, "chars": len(content), "error": type(e).__name__},
+        )
         raise ItemError("ИИ вернул неверный ответ") from e
 
 
@@ -261,8 +285,8 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
     """
     started = time.perf_counter()
     log["stage"] = "pdf"
-    pages = await pdf_pages(pdf)
-    text = re.sub(r"(\w)-\n(?=\w)", r"\1-", select_text(pages))  # «интернет-\nмагазинов» — одно слово
+    pages = [dehyphen(p) for p in await pdf_pages(pdf)]
+    text = select_text(pages)
     logger.info(
         "Текст извлечён",
         extra=log | {"pages": len(pages), "duration_ms": round((time.perf_counter() - started) * 1000)},

@@ -3,12 +3,15 @@
 from datetime import UTC, datetime
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
 from admin_service.src.service.works_service import WorkService
 from catalog_service.src.service.catalog_service import CatalogService
+from shared.bus.consumer import MessageBusConsumer
+from shared.bus.envelope import BusMessage
+from shared.exceptions import RetryMessageError
 from shared.imports.tables import csv_line, missing_columns, parse_csv, to_records
 from shared.people import Person
 from shared.people.names import name_query, parse_name, short_key, short_name, surname_first
@@ -171,3 +174,29 @@ def test_field_source_only_for_filled_fields() -> None:
     data = {"department": None, "direction": {"code": None, "name": ""}, "keywords": [], "title": "T", "pages": 0}
     meta = {k: {"source": "ai", "confidence": 0.85} for k in [*data, "subjects"]}
     assert live_meta(data, meta).keys() == {"title", "pages", "subjects"}
+
+
+class FakeMessage:
+    def __init__(self, body: bytes) -> None:
+        self.body, self.message_id, self.redelivered, self.headers = body, "m", False, {}
+        self.outcome: list = []
+
+    async def ack(self) -> None:
+        self.outcome.append("ack")
+
+    async def reject(self, requeue: bool) -> None:
+        self.outcome.append(("reject", requeue))
+
+
+async def test_retry_without_retry_queue_goes_to_dead_letters() -> None:
+    """Без очереди повторов RetryMessageError не должен оставлять сообщение без ack."""
+
+    async def handler(*_) -> None:
+        raise RetryMessageError("позже")
+
+    message = FakeMessage(BusMessage(type="t", source="test", trace_id="x", payload={}).model_dump_json().encode())
+    class Empty(BaseModel):
+        pass
+
+    await MessageBusConsumer(None, "q", {"t": (Empty, handler)})._on_message(message)
+    assert message.outcome == [("reject", False)]

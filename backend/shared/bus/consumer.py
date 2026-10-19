@@ -122,7 +122,12 @@ class MessageBusConsumer:
                 await handler(dto, delivery)
             except RetryMessageError as e:
                 if not self._retry_ttl:
-                    raise
+                    # raise отсюда прошёл бы мимо соседних except: сообщение висело бы без ack до закрытия канала
+                    logger.warning(
+                        "Временная ошибка без очереди повторов — в dead letters", extra=log | {"reason": str(e)}
+                    )
+                    await message.reject(requeue=False)
+                    return
                 logger.warning(
                     "Временная ошибка — повтор через очередь",
                     extra=log | {"reason": str(e), "retries": delivery.retries},
