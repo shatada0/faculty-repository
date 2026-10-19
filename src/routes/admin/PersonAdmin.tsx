@@ -8,12 +8,14 @@ import { NotFound } from '@/components/Layout'
 import { StatusBadge, TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Textarea } from '@/components/ui'
 import { personKindLabels } from '@/lib/labels'
+import { useDepartments } from '@/routes/People'
 import { invalidatePeople } from './People'
 
 function PersonForm({ person }: { person: AdminPersonCard }) {
   const qc = useQueryClient()
   const init = { ...person, aliasesText: (person.aliases ?? []).join('\n') }
   const [f, setF] = useState(init)
+  const departments = useDepartments().data?.items ?? []
   const [busy, setBusy] = useState(false)
   const [msg, setMsg] = useState<{ ok: boolean; text: string }>()
   const set = (k: keyof typeof f) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => setF({ ...f, [k]: e.target.value })
@@ -45,7 +47,7 @@ function PersonForm({ person }: { person: AdminPersonCard }) {
       )}</Field>
       {f.kind === 'external'
         ? <Field label="Организация">{(id) => <Input id={id} value={f.affiliation ?? ''} onChange={set('affiliation')} />}</Field>
-        : <Field label="Кафедра">{(id) => <Input id={id} value={f.department ?? ''} onChange={set('department')} />}</Field>}
+        : <Field label="Кафедра">{(id) => <Select id={id} value={f.department ?? ''} onChange={set('department')}><option value="">—</option>{departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</Select>}</Field>}
       {staff && (
         <>
           <Field label="Должность">{(id) => <Input id={id} value={f.position ?? ''} onChange={set('position')} placeholder="доцент кафедры ИС" />}</Field>

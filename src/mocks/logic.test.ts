@@ -5,7 +5,7 @@ import { gostCitation } from './gost'
 import { confLevelLabels, pubKindLabels } from '@/lib/labels'
 import { nameKey, parseName, shortName } from './names'
 import { fromLabel, missingColumns, parseCsv, toRecords } from './table'
-import { adminPeople, applyEdit, catalog, facets, fillFromDoi, latest, LOW_CONFIDENCE, metrics, nextInQueue, profile, template, withChecks } from './logic'
+import { adminPeople, applyEdit, catalog, facets, fillFromDoi, latest, LOW_CONFIDENCE, metrics, nextInQueue, profile, suggest, template, withChecks } from './logic'
 import { db } from './seed'
 
 describe('csv', () => {
@@ -134,5 +134,28 @@ describe('people pages and journal lists', () => {
     const r = catalog(new URLSearchParams('type=publication&journalList=white1&pageSize=100'))
     expect(r.total).toBeGreaterThan(0)
     expect(r.items.every((w) => w.type === 'publication' && w.journalLists?.includes('Белый список, уровень 1'))).toBe(true)
+  })
+})
+
+describe('live search', () => {
+  const titles = (q: string) => catalog(new URLSearchParams({ q, pageSize: '100' })).items.map((w) => w.title.toLowerCase())
+  it('finds by the start of a word and forgives typos', () => {
+    const exact = titles('нейронные')
+    expect(exact.length).toBeGreaterThan(0)
+    for (const q of ['нейр', 'нейроные', 'нецронных']) expect(titles(q).some((t) => t.includes('нейрон'))).toBe(true)
+    expect(titles('ронные')).not.toContain(exact[0]) // only word starts, not the middle
+  })
+  it('suggests works with marked words and staff', () => {
+    expect(suggest('  ')).toEqual({ works: [], people: [] })
+    const res = suggest('нейр')
+    expect(res.works.length).toBeGreaterThan(0)
+    expect(res.works.length).toBeLessThanOrEqual(6)
+    for (const w of res.works) expect(w.parts.map((p) => p.text).join('')).toBe(w.title)
+    expect(res.works.flatMap((w) => w.parts.filter((p) => p.hit).map((p) => p.text.toLowerCase())).every((t) => t.startsWith('ней'))).toBe(true)
+    const staff = db.people.find((p) => p.kind === 'staff' && !p.mergedInto)!
+    const surname = staff.fullName.split(' ')[0]
+    expect(suggest(surname).people.map((p) => p.id)).toContain(staff.id)
+    const draft = db.works.find((w) => w.status === 'draft')!
+    expect(suggest(draft.title).works.map((w) => w.id)).not.toContain(draft.id)
   })
 })

@@ -1,0 +1,34 @@
+# Линтер и формат: ruff format . --check && ruff check . — так же гоняет CI.
+target-version = "py314"
+line-length = 120
+extend-exclude = [".venv", "migrations/versions"]
+
+[lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "ASYNC", "S"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # кириллица в строках и комментариях — норма
+    "S101",                        # assert в тестах
+    "B008",                        # Depends() в аргументах — идиома FastAPI
+]
+
+[lint.pycodestyle]
+max-line-length = 140  # формат режет код на 120; длинные докстринги и SQL терпим до 140
+
+[lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S311"]
+"tests/conftest.py" = ["E402"]  # импорты после переменных окружения: shared.config читает их при импорте
+"admin_service/src/seed.py" = ["S311"]  # детерминированный генератор демо-данных, не криптография
+
+[lint.isort]
+known-first-party = [
+    "admin_service",
+    "auth_service",
+    "catalog_service",
+    "extraction_worker",
+    "import_service",
+    "shared",
+    "tests",
+]
+
+[format]
+quote-style = "double"

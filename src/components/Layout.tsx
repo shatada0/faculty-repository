@@ -55,8 +55,8 @@ function Header() {
           <Link to="/" className="mr-auto flex items-center gap-3 pb-3 text-ink no-underline hover:text-ink">
             <img src="/logo.svg" alt="" className="h-12 w-12 shrink-0" />
             <span>
-              <span className="block text-2xl font-bold leading-tight">Репозиторий работ</span>
-              <span className="block text-sm text-ink-2">ВКР, курсовые, публикации и доклады</span>
+              <span className="block text-2xl font-bold leading-tight text-brand">Либерея</span>
+              <span className="block text-sm text-ink-2">репозиторий работ факультета</span>
             </span>
           </Link>
           <nav className="flex gap-7" aria-label="Основная навигация">
@@ -73,7 +73,7 @@ function Header() {
 const Footer = () => (
   <footer className="border-t border-ink">
     <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-4 pb-7 pt-4 text-sm text-ink-2">
-      <span>{ORG} · Репозиторий работ факультета</span>
+      <span>{ORG} · Либерея, репозиторий работ факультета</span>
       <span>{new Date().getFullYear()}</span>
     </div>
   </footer>

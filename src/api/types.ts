@@ -309,3 +309,9 @@ export interface FileLink {
   url: string
   expiresAt: string
 }
+
+/** GET /works/suggest — search box suggestions; `parts` is the title split by the server, `hit` marks matched words. */
+export interface Suggestions {
+  works: { id: string; type: WorkType; title: string; year?: number; parts: { text: string; hit: boolean }[] }[]
+  people: { id: string; fullName: string }[]
+}

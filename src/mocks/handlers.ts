@@ -1,6 +1,7 @@
 // MSW handlers implementing the API contract (section 7) over the in-memory db.
 import { delay, http, HttpResponse, type DefaultBodyType, type HttpResponseResolver, type PathParams } from 'msw'
 import type { AccessLevel, AdminWork, MaterialKind, MaterialStatus, Person, PersonKind, SubjectScheme, User, WorkType } from '@/api/types'
+import { DEPTS } from './data'
 import { gostCitation } from './gost'
 import { shortName } from './names'
 import { templateCsv, templates, toCsv } from './table'
@@ -8,9 +9,13 @@ import { db, type MockPerson } from './seed'
 import {
   adminPeople, adminWorks, advance, allAuthorRefs, applyEdit, asAuthor, canDo, catalog, createImport, departments, DoiError, facets, fillFromDoi,
   fits, ImportError, isVisible, latest, match, merge, metrics, myWorks, nextInQueue, personCard, personWorks, previewTable, profile,
-  publicImport, publicItem, relatedOptions, resolvePerson, searchClassifier, staffList, summary, syncRelated, template, toPublic, unmatched,
+  publicImport, publicItem, relatedOptions, resolvePerson, searchClassifier, staffList, suggest, summary, syncRelated, template, toPublic, unmatched,
   UPLOAD_LIMITS, withChecks,
 } from './logic'
+
+// Departments are a reference list, as on the backend: anything else is a 400, not a new department.
+const unknownDepartment = (d: unknown) =>
+  d && !DEPTS.some((x) => x.name === d) ? err(400, 'bad_department', `Кафедры «${d}» нет в справочнике: выберите из списка`) : undefined
 
 // ---- dev toggles (mock panel) ----
 const KEY = 'mock-settings'
@@ -77,6 +82,7 @@ export const handlers = [
   }),
   get('/works/facets', ({ request }) => HttpResponse.json(facets(sp(request)))),
   get('/works/latest', () => HttpResponse.json(latest())),
+  get('/works/suggest', ({ request }) => HttpResponse.json(suggest((sp(request).get('q') ?? '').slice(0, 200)))),
   get('/works', ({ request }) => HttpResponse.json(catalog(sp(request)))),
   get('/works/:id', ({ params }) => {
     const w = work(params.id)
@@ -236,6 +242,8 @@ export const handlers = [
     const body = (await request.json()) as Record<string, unknown>
     const type = body.type
     if (!isWorkType(type)) return err(400, 'bad_request', 'Неизвестный тип работы')
+    const badDept = unknownDepartment(body.department)
+    if (badDept) return badDept
     const prefix = { vkr: 'vkr', coursework: 'cw', publication: 'pub', talk: 'talk' }[type]
     const w = { type, keywords: [], language: 'ru', hasFile: false, fieldMeta: {}, id: `${prefix}-${++db.seq}`, status: 'draft', createdAt: now(), updatedAt: now() } as unknown as AdminWork
     applyEdit(w, body, template(type))
@@ -251,7 +259,10 @@ export const handlers = [
     const w = work(params.id)
     if (!w) return notFound('Работа не найдена')
     const before = { ...w }
-    applyEdit(w, (await request.json()) as Record<string, unknown>, before as unknown as Record<string, unknown>)
+    const body = (await request.json()) as Record<string, unknown>
+    const badDept = unknownDepartment(body.department)
+    if (badDept) return badDept
+    applyEdit(w, body, before as unknown as Record<string, unknown>)
     w.updatedAt = now()
     syncRelated(w, before)
     return adminJson(w)
@@ -329,6 +340,8 @@ export const handlers = [
   post('/admin/people', async ({ request }) => {
     const body = (await request.json()) as Partial<Person>
     if (!body.fullName?.trim()) return err(400, 'bad_name', 'Укажите ФИО')
+    const badDept = unknownDepartment(body.department)
+    if (badDept) return badDept
     const p = { aliases: [], ...body, id: `p-${++db.seq}` } as MockPerson
     db.people.push(p)
     return HttpResponse.json({ ...p, shortName: shortName(p.fullName) }, { status: 201 })
@@ -349,6 +362,8 @@ export const handlers = [
     delete body.id
     if (body.fullName !== undefined && !body.fullName.trim()) return err(400, 'bad_name', 'Укажите ФИО')
     if (body.orcid && !/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(body.orcid)) return err(400, 'bad_orcid', 'ORCID в формате 0000-0000-0000-0000')
+    const badDept = unknownDepartment(body.department)
+    if (badDept) return badDept
     Object.assign(p, body)
     for (const w of db.works) for (const a of allAuthorRefs(w)) if (a.personId === p.id) a.kind = p.kind
     return HttpResponse.json(personCard(p))

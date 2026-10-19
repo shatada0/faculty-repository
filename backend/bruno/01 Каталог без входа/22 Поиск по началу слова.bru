@@ -1,0 +1,22 @@
+meta {
+  name: Поиск по началу слова
+  type: http
+  seq: 22
+}
+
+get {
+  url: {{baseUrl}}/api/works?q=нейр&pageSize=100
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: gt 0
+}
+
+tests {
+  test("недописанное «нейр» находит «нейронные»", function () {
+    expect(res.body.items.some(w => /нейрон/i.test(w.title))).to.be.true;
+  });
+}

@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { getLatestWorks, getStats } from '@/api'
 import type { WorkType } from '@/api/types'
 import { WorkCard, WorkCardSkeleton } from '@/components/WorkCard'
-import { Button, ErrorState, Input, SectionTitle, Skeleton, Tiles, btn } from '@/components/ui'
+import { SearchBox } from '@/components/SearchBox'
+import { Button, ErrorState, SectionTitle, Skeleton, Tiles, btn } from '@/components/ui'
 import { formatShortDate, plural } from '@/lib/format'
 import { useDepartments } from './People'
 
@@ -15,7 +16,7 @@ const TILE_LABEL: Record<WorkType, [string, string, string]> = {
   publication: ['публикация', 'публикации', 'публикаций'],
   talk: ['выступление', 'выступления', 'выступлений'],
 }
-const EXAMPLES = ['языковые модели', 'составление расписания', 'микросервисы', '09.03.04']
+const EXAMPLES = ['языковые модели', 'составление расписания', 'микросервисы']
 
 export default function Home() {
   const navigate = useNavigate()
@@ -27,9 +28,9 @@ export default function Home() {
   return (
     <div className="-mt-6 space-y-10">
       <section className="-mx-4 bg-panel px-4 py-9">
-        <form role="search" className="flex max-w-3xl flex-wrap" onSubmit={(e) => { e.preventDefault(); navigate(q.trim() ? `/works?q=${encodeURIComponent(q.trim())}` : '/works') }}>
-          <label htmlFor="home-q" className="mb-2 w-full text-2xl font-bold">Найти работу</label>
-          <Input id="home-q" value={q} onChange={(e) => setQ(e.target.value)} placeholder="тема, автор, руководитель, журнал или конференция" className="h-13 flex-[1_1_18rem] border-brand text-lg" />
+        <form role="search" className="flex max-w-3xl flex-wrap gap-x-3 gap-y-2" onSubmit={(e) => { e.preventDefault(); navigate(q.trim() ? `/works?q=${encodeURIComponent(q.trim())}` : '/works') }}>
+          <label htmlFor="home-q" className="w-full text-2xl font-bold">Найти работу</label>
+          <SearchBox id="home-q" value={q} onChange={setQ} placeholder="тема, автор, руководитель, журнал или конференция" className="flex-[1_1_18rem]" inputClassName="h-13 border-brand text-lg" />
           <Button type="submit" className="h-13 px-8">Найти</Button>
         </form>
         <p className="mt-3 text-[15px] text-ink-2">
@@ -65,10 +66,6 @@ export default function Home() {
               </div>
             ))}
             <Link to="/people" className={btn('link', 'sm', 'mt-4')}>Все преподаватели</Link>
-          </section>
-          <section className="bg-panel px-5 py-4">
-            <h2 className="mb-2 text-xl font-bold">О репозитории</h2>
-            <p className="text-[15px] text-ink-2">ВКР и курсовые загружает кафедра, публикации и доклады — отдел науки. Текст работы открыт, если автор дал согласие; иначе доступна только карточка.</p>
           </section>
         </aside>
       </div>

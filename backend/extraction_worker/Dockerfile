@@ -3,4 +3,4 @@ ARG BASE_IMAGE=project-base
 FROM ${BASE_IMAGE}
 COPY shared shared
 COPY extraction_worker extraction_worker
-CMD ["uvicorn", "extraction_worker.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--loop", "uvloop", "--http", "httptools"]
+CMD ["uvicorn", "extraction_worker.src.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-access-log", "--loop", "uvloop", "--http", "httptools"]

@@ -9,6 +9,7 @@ import { GripVertical, Link2, Link2Off, Trash2 } from 'lucide-react'
 import { createPerson, getAdminPeople } from '@/api'
 import type { AuthorRef, Person, PersonKind } from '@/api/types'
 import { personKindLabels } from '@/lib/labels'
+import { useDepartments } from '@/routes/People'
 import { Button, Dialog, Field, Input, Select, cn } from './ui'
 
 /** Search people in the system and pick one. */
@@ -52,6 +53,7 @@ export function NewPersonDialog({ open, displayName, defaultKind = 'staff', onCl
 }) {
   const qc = useQueryClient()
   const [form, setForm] = useState({ fullName: displayName, kind: defaultKind as PersonKind, department: '', affiliation: '' })
+  const departments = useDepartments().data?.items ?? []
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   useEffect(() => { if (open) setForm({ fullName: displayName, kind: defaultKind, department: '', affiliation: '' }) }, [open, displayName, defaultKind])
@@ -82,7 +84,7 @@ export function NewPersonDialog({ open, displayName, defaultKind = 'staff', onCl
         )}</Field>
         {form.kind === 'external'
           ? <Field label="Организация">{(id) => <Input id={id} value={form.affiliation} onChange={(e) => setForm({ ...form, affiliation: e.target.value })} />}</Field>
-          : <Field label="Кафедра">{(id) => <Input id={id} value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} />}</Field>}
+          : <Field label="Кафедра">{(id) => <Select id={id} value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })}><option value="">—</option>{departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</Select>}</Field>}
         {error && <p className="text-sm text-danger">{error}</p>}
         <div className="flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Отмена</Button>

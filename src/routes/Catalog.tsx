@@ -49,7 +49,7 @@ export default function Catalog() {
   })
   const reset = () => update((p) => { for (const k of ALL_FILTERS) p.delete(k); p.delete('q') })
 
-  // ---- debounced search box (300 ms) ----
+  // ---- live results: the query goes to the URL 300 ms after typing, replacing the entry (no history noise) ----
   const [text, setText] = useState(q)
   const pushed = useRef(q)
   useEffect(() => {
@@ -76,7 +76,7 @@ export default function Catalog() {
   return (
     <div className="space-y-5">
       <h1 className="text-4xl font-bold">Работы</h1>
-      <form role="search" className="flex max-w-3xl flex-wrap" onSubmit={(e) => {
+      <form role="search" className="flex max-w-3xl flex-wrap gap-x-3 gap-y-2" onSubmit={(e) => {
         e.preventDefault()
         pushed.current = text.trim()
         update((p) => (text.trim() ? p.set('q', text.trim()) : p.delete('q')))

@@ -1,0 +1,22 @@
+meta {
+  name: Поиск с опечаткой
+  type: http
+  seq: 23
+}
+
+get {
+  url: {{baseUrl}}/api/works?q=нецронных&pageSize=100
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.total: gt 0
+}
+
+tests {
+  test("опечатка «нецронных» находит «нейронных» по триграммам", function () {
+    expect(res.body.items.some(w => /нейронн/i.test(w.title))).to.be.true;
+  });
+}

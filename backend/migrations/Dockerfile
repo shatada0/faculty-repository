@@ -6,4 +6,4 @@ COPY admin_service admin_service
 COPY migrations migrations
 COPY fixtures fixtures
 COPY alembic.ini .
-CMD ["sh", "-c", "alembic upgrade head && python -m admin_service.refdata init"]
+CMD ["sh", "-c", "alembic upgrade head && python -m admin_service.src.refdata init"]

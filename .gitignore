@@ -4,3 +4,6 @@ dist
 # архив-снимок фронта, не исходники
 /*.zip
 bruno-report.html
+
+# бенчмарк LLM: сгенерированные PDF и результаты
+backend/bench/

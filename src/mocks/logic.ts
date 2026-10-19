@@ -100,7 +100,7 @@ export function staffList(sp: URLSearchParams) {
   const deps = sp.getAll('department')
   const works = visibleWorks()
   const items = activePeople()
-    .filter((p) => p.kind === 'staff' && (!q || p.fullName.toLowerCase().includes(q)) && (!deps.length || deps.includes(p.department!)))
+    .filter((p) => p.kind === 'staff' && (!q || nameMatches(q, p.fullName)) && (!deps.length || deps.includes(p.department!)))
     .map((p) => ({ ...p, aliases: undefined, counts: countsFor(p.id, works) }))
   if (sp.get('sort') === 'works') items.sort((a, b) => b.counts.publication + b.counts.talk - (a.counts.publication + a.counts.talk))
   else items.sort((a, b) => a.fullName.localeCompare(b.fullName, 'ru'))
@@ -260,6 +260,25 @@ function filterBy<T extends Work>(works: T[], sp: URLSearchParams, keys: readonl
 
 // ponytail: crude prefix stemming for Russian endings; the real backend does proper full-text search
 const stem = (t: string) => (t.length >= 4 ? t.slice(0, Math.max(3, t.length - 2)) : t)
+const norm = (s: string) => s.toLowerCase().replace(/ё/g, 'е')
+const wordsOf = (s: string) => norm(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+const FEW = 5 // fewer exact matches than this — similar ones (typos) are added, as on the backend
+
+function edits(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[b.length]
+}
+/** The word starts with the query word, or (typos) its start is within one edit of it — two for long words. */
+export function wordMatch(tok: string, word: string, fuzzy = false): boolean {
+  if (word.startsWith(tok)) return true
+  if (!fuzzy || tok.length < 4) return false
+  return edits(tok, word.slice(0, tok.length)) <= (tok.length >= 7 ? 2 : 1)
+}
 
 function haystack(w: Work): [string, number][] {
   const names = allAuthorRefs(w).map((a) => `${a.displayName} ${personById(a.personId)?.fullName ?? ''}`).join(' ')
@@ -267,23 +286,57 @@ function haystack(w: Work): [string, number][] {
   return [[w.title, 3], [w.keywords.join(' '), 2], [names, 2], [w.annotation ?? '', 1], [venue, 1]]
 }
 
-export function score(w: Work, q: string): number {
-  const tokens = q.toLowerCase().replace(/ё/g, 'е').split(/[\s,.;:«»"()]+/).filter(Boolean).map(stem)
-  const fields = haystack(w).map(([t, wt]) => [t.toLowerCase().replace(/ё/g, 'е'), wt] as const)
+/** Every query word must start a word of the work; with `fuzzy`, typo matches count too but weigh 10× less. */
+export function score(w: Work, q: string, fuzzy = false): number {
+  const tokens = wordsOf(q).map(stem)
+  const fields = haystack(w).map(([t, wt]) => [wordsOf(t), wt] as const)
   let total = 0
   for (const tok of tokens) {
-    const best = Math.max(0, ...fields.filter(([t]) => t.includes(tok)).map(([, wt]) => wt))
-    if (!best) return 0
-    total += best
+    const best = Math.max(0, ...fields.filter(([ws]) => ws.some((x) => wordMatch(tok, x))).map(([, wt]) => wt))
+    const near = best ? 0 : Math.max(0, ...fields.filter(([ws]) => fuzzy && ws.some((x) => wordMatch(tok, x, true))).map(([, wt]) => wt / 10))
+    if (!best && !near) return 0
+    total += best || near
   }
   return total || 1
 }
 
+/** Shared by the catalog, facets, suggestions and the admin list: exact first, similar only when exact are few. */
+function matching<T extends Work>(works: T[], q: string) {
+  const scored = (fuzzy: boolean) => works.map((w) => ({ w, s: score(w, q, fuzzy) })).filter((x) => x.s > 0)
+  const exact = scored(false)
+  return exact.length >= FEW ? exact : scored(true)
+}
+
 function searched(sp: URLSearchParams) {
   const q = sp.get('q')?.trim()
-  return visibleWorks()
-    .map((w) => ({ w, s: q ? score(w, q) : 1 }))
-    .filter((x) => x.s > 0)
+  return q ? matching(visibleWorks(), q) : visibleWorks().map((w) => ({ w, s: 1 }))
+}
+
+/** The title split into parts, matched words marked — what GET /works/suggest returns in `parts`. */
+export function highlight(title: string, q: string) {
+  const tokens = wordsOf(q).map(stem)
+  const parts: { text: string; hit: boolean }[] = []
+  for (const piece of title.split(/([\p{L}\p{N}]+)/u).filter(Boolean)) {
+    const hit = /[\p{L}\p{N}]/u.test(piece) && tokens.some((t) => wordMatch(t, norm(piece), true))
+    const last = parts[parts.length - 1]
+    if (last && !last.hit && !hit) last.text += piece
+    else parts.push({ text: piece, hit })
+  }
+  return parts
+}
+
+export function suggest(q: string) {
+  q = q.trim()
+  if (!q) return { works: [], people: [] }
+  const works = matching(visibleWorks(), q)
+    .sort((a, b) => b.s - a.s || b.w.year - a.w.year)
+    .slice(0, 6)
+    .map(({ w }) => ({ id: w.id, type: w.type, title: w.title, year: w.year, parts: highlight(w.title, q) }))
+  const people = activePeople()
+    .filter((p) => p.kind === 'staff' && [p.fullName, ...(p.aliases ?? [])].some((n) => nameMatches(q, n)))
+    .slice(0, 4)
+    .map((p) => ({ id: p.id, fullName: p.fullName }))
+  return { works, people }
 }
 
 export function catalog(sp: URLSearchParams) {
@@ -483,12 +536,13 @@ export function summary() {
 
 export function adminWorks(sp: URLSearchParams) {
   const q = sp.get('q')?.trim()
+  const found = new Set(q ? matching(db.works, q).map((x) => x.w) : [])
   let items = db.works.filter((w) =>
     (!sp.get('type') || w.type === sp.get('type')) &&
     (!sp.get('status') || w.status === sp.get('status')) &&
     (!sp.get('importId') || w.importId === sp.get('importId')) &&
     (!sp.get('year') || String(w.year) === sp.get('year')) &&
-    (!q || score(w, q) > 0 || (w.originalFileName ?? '').toLowerCase().includes(q.toLowerCase())))
+    (!q || found.has(w) || (w.originalFileName ?? '').toLowerCase().includes(q.toLowerCase())))
   const checked = items.map(withChecks)
   if (sp.get('sort') === 'problems') {
     checked.sort((a, b) => b.issues.length - a.issues.length || a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
@@ -530,9 +584,11 @@ export function unmatched() {
   return { items, total: items.length }
 }
 
-// "Иванов И. И." finds "Иванов Иван Иванович": every word of the query starts a word of the name.
-const words = (s: string) => s.toLowerCase().replace(/ё/g, 'е').split(/[\s.,]+/).filter(Boolean)
-const nameMatches = (q: string, name: string) => name.toLowerCase().includes(q) || words(q).every((t) => words(name).some((w) => w.startsWith(t)))
+// "Иванов И. И." finds "Иванов Иван Иванович": every word of the query starts a word of the name; one typo is forgiven.
+function nameMatches(q: string, name: string) {
+  const ws = wordsOf(name)
+  return wordsOf(q).every((t) => ws.some((w) => wordMatch(t, w, true)))
+}
 
 export function adminPeople(sp: URLSearchParams) {
   const q = sp.get('q')?.toLowerCase().trim()

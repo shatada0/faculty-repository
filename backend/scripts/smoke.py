@@ -114,6 +114,8 @@ def archive(m: httpx.Client) -> None:
         assert work["status"] == "published" and work["accessLevel"] == "card_only" and work["authors"][0]["personId"]
         assert work["supervisors"][0]["displayName"] == "Никитина Анна Сергеевна", work["supervisors"]
         assert work["direction"]["code"] == "09.03.04" and work["year"] == 2026 and work["pages"] == 64
+    # убрать за собой: иначе следующий прогон (и коллекция Bruno) увидит дубль вместо публикации
+    ok(m.post(f"/api/admin/works/{good['workId']}/reject", json={"reason": "Смоук-тест"}))
 
 
 def grafana() -> None:

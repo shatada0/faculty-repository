@@ -35,3 +35,27 @@ class FakePublisher:
 
     async def publish(self, topic: str, dto: BaseModel) -> None:
         self.published.append((topic, dto))
+
+
+def deps(d):
+    """Все зависимости ручки вглубь: require_* может висеть на роутере, а не на самой функции."""
+    for s in d.dependencies:
+        yield s.call
+        yield from deps(s)
+
+
+async def anonymous_everywhere(app, routers) -> None:
+    """Каждая ручка каждого роутера без куки отвечает 401 — до разбора тела и параметров."""
+    import re
+
+    import httpx
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        for router in routers:
+            for r in router.routes:
+                path = re.sub(r"\{[^}]+\}", "0190a0a0-0000-7000-8000-000000000000", r.path).replace(
+                    "{work_type}", "vkr"
+                )
+                for method in r.methods:
+                    response = await client.request(method, path)
+                    assert response.status_code == 401, (method, r.path)

@@ -19,13 +19,13 @@ cp .env.example .env
 sh scripts/dev-secrets.sh
 docker build -f Dockerfile.base -t project-base .
 docker compose up -d --build
-docker compose exec admin_service python -m admin_service.seed demo
+docker compose exec admin_service python -m admin_service.src.seed demo
 ```
 
 `seed demo` напечатает две команды для входов как в моках (`moderator`, `orlov`); пароль читается из stdin:
 
 ```bash
-docker compose exec -it auth_service python -m auth_service.users add moderator --name Модератор --role moderator
+docker compose exec -it auth_service python -m auth_service.src.users add moderator --name Модератор --role moderator
 ```
 
 Сайт — `https://localhost`, файлы — `https://files.localhost`, Grafana — `https://stats.localhost` (логин `admin`, пароль в `secrets/grafana_admin`). Фронт в режиме разработки: `VITE_USE_MOCKS=false` и `VITE_API_PROXY=https://localhost` в `../.env.development.local`.
@@ -36,11 +36,41 @@ LLM: на машине с NVIDIA — `docker compose --profile gpu up -d` (vLLM)
 
 | Команда | Что делает |
 | --- | --- |
-| `python -m auth_service.users add\|role\|block\|password <логин>` | учётки; пароль из stdin, `role`/`block`/`password` гасят сессии |
-| `python -m admin_service.refdata load journals\|classifiers\|directions <файл.csv>` | справочники upsert'ом; форматы — в докстринге модуля |
-| `python -m admin_service.seed people staff.csv` | сотрудники кафедр: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID» |
-| `python -m admin_service.seed demo` | демо-данные моков; в базе с работами не запускается |
+| `python -m auth_service.src.users add\|role\|block\|password <логин>` | учётки; пароль из stdin, `role`/`block`/`password` гасят сессии |
+| `python -m admin_service.src.refdata load journals\|classifiers\|directions <файл.csv>` | справочники upsert'ом; форматы — в докстринге модуля |
+| `python -m admin_service.src.seed people staff.csv` | сотрудники кафедр: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID» |
+| `python -m admin_service.src.seed demo` | демо-данные моков; в базе с работами не запускается |
 | `docker compose run --rm backup` / `… backup restore-check` | ночной бэкап и еженедельная проверка восстановления |
+
+## Раскладка
+
+Как в aurora-assistant: модели и репозитории — в `shared`, в сервисе только `api/`, `service/`, `dependencies.py`, `main.py`. Направление зависимостей — роутер → сервис → репозиторий → модели, обратных импортов нет.
+
+```
+shared/
+  auth/          models.py (User), session.py (JWT, SessionUser, require_*)
+  works/         models.py (Work, WorkPerson, …), schemas.py (запись и work_dict), checks.py, labels.py
+  people/        models.py (Person, PersonName), names.py (ключи ФИО)
+  imports/       models.py (Import, ImportItem, ExtractionResult), tables.py (csv/xlsx)
+  refdata/       models.py (кафедры, журналы, классификаторы, направления)
+  db/            base.py (Base, one_of, created), registry.py (все модели в одной metadata)
+  repository/    people_repository.py, works_repository.py
+  uow/  config/  exceptions/  logging/  context/  middleware/ (create_app и мидлвари)  storage/  bus/
+<сервис>/
+  Dockerfile
+  src/
+    main.py          create_app и lifespan
+    dependencies.py  сборка сервисов, псевдонимы Depends
+    dto.py           тип на границе слоёв (только admin_service: PersonIn)
+    api/             router.py (+ <раздел>_router.py), schemas.py
+    service/         <имя>_service.py и его помощники
+    <команда>.py     CLI: admin_service.src.refdata, .seed; auth_service.src.users
+migrations/versions/ ГГГГ_ММ_ДД_NNNN-<ревизия>_<описание>.py
+tests/               conftest.py (окружение и фикстура demo с PostgreSQL), fakes.py, test_<сервис>.py, test_shared.py
+ruff.toml, pytest.ini
+```
+
+Сервисы с HTTP подключаются в uvicorn как `<сервис>.src.main:app`, воркер — так же (у него только `/healthcheck`).
 
 ## Разработка
 
@@ -58,7 +88,7 @@ ruff format . && ruff check . && pytest -q
 - Счётчик повторов LLM — свой заголовок `retries`, а не `x-death`: RabbitMQ 4 не доверяет x-заголовкам, которые клиент переопубликовал сам.
 - У роли `writer` кроме чтения сессионных колонок `users` есть `SELECT (name)` (имя загрузившего материал) и `UPDATE (person_id)` (слияние людей переносит учётки).
 - У `import_items` есть колонка `meta` — строка таблицы сведений к файлу архива; её значения ложатся поверх ответа ИИ.
-- Пользователей `seed demo` не создаёт: у роли `writer` нет записи в `users`, учётки — только через `auth_service.users`.
+- Пользователей `seed demo` не создаёт: у роли `writer` нет записи в `users`, учётки — только через `auth_service.src.users`.
 - Загрузки фото людей нет: во фронте нет такого вызова. `photoUrl` отдаётся, если `photo_key` заполнен.
 - Демо-DOI `10.12345/…` из моков в Crossref не существуют: «Заполнить по DOI» на настоящем бэке работает с настоящими DOI.
 - У `app-ro` кроме `s3:GetObject` есть `s3:ListBucket` на префиксы `works` и `people`: без листинга `mc mirror` в бэкапе получает Access Denied.
@@ -68,4 +98,8 @@ ruff format . && ruff check . && pytest -q
 - `limit_req_status 429` и JSON-ответ `rate_limited` вместо стандартного 503 с HTML. Стандартный `access_log` образа nginx убран: каждый запрос писался бы второй, не-JSON строкой.
 - Выгрузки работ принимают ещё `importId`: это фильтр «Всех работ», а выгрузка повторяет текущие фильтры.
 - `STATS_ALLOW` для локального стенда — `172.16.0.0/12`: запрос с хоста приходит в nginx с адреса шлюза Docker, а не с 127.0.0.1.
-- ВКР и курсовые загружаются в один шаг: PDF и zip вперемешку в одной загрузке, без выбора типа. Тип и у курсовой «работа или проект» воркер узнаёт по титульнику, уровень без слова на титульнике — по коду направления (NN.03 — бакалавриат, .04 — магистратура, .05 — специалитет). Автору, которого нет в базе, сервис сам заводит профиль выпускника (ВКР) или студента (курсовая), если ФИО дословно есть в тексте PDF; выдуманное моделью ФИО остаётся нераспознанным. Рубрики ставятся по справочнику направлений: колонка `subjects` в `directions.csv` (`grnti:50.41,oecd:1.02`), в `fixtures/` — черновик, сверить с кафедрами. Карточка без ошибок и замечаний (все поля ИИ уверены не ниже 0.7, руководитель найден, не дубль) публикуется без модератора с доступом «только карточка», в журнал пишется `audit`-строка «Опубликовано без модератора»; остальное ждёт в очереди проверки. Проверки публикации переехали из `admin_service/checks.py` в `shared/checks.py`: ими пользуется и импорт.
+- ВКР и курсовые загружаются в один шаг: PDF и zip вперемешку в одной загрузке, без выбора типа. Тип и у курсовой «работа или проект» воркер узнаёт по титульнику, уровень без слова на титульнике — по коду направления (NN.03 — бакалавриат, .04 — магистратура, .05 — специалитет). Автору, которого нет в базе, сервис сам заводит профиль выпускника (ВКР) или студента (курсовая), если ФИО дословно есть в тексте PDF; выдуманное моделью ФИО остаётся нераспознанным. Рубрики ставятся по справочнику направлений: колонка `subjects` в `directions.csv` (`grnti:50.41,oecd:1.02`), в `fixtures/` — черновик, сверить с кафедрами. Карточка без ошибок и замечаний (все поля ИИ уверены не ниже 0.7, руководитель найден, не дубль) публикуется без модератора с доступом «только карточка», в журнал пишется `audit`-строка «Опубликовано без модератора»; остальное ждёт в очереди проверки. Проверки публикации переехали из `admin_service/checks.py` в `shared/works/checks.py`: ими пользуется и импорт.
+- Поиск (`q`) — по началу слова, а не по целому слову: лексемы `websearch_to_tsquery` после стемминга становятся префиксами (`'нейр':*`), кавычки, `or` и минус работают как раньше. Опечатки — `pg_trgm` (миграция `20261019_0003`): триграммные GIN-индексы по названию работы и `person_names`, порог `word_similarity` снижен до 0.5 на уровне базы. Похожие добавляются, только если точных совпадений меньше пяти, и стоят ниже точных. Одна функция `matches()`/`relevance()` в `works_repository` — для каталога, фасетов и рабочего места; у людей то же в `name_search()`. Новая ручка `GET /api/works/suggest?q=` — подсказки строки поиска (до 6 работ с подсветкой и до 4 преподавателей).
+- Раскладка файлов приведена к aurora-assistant (раздел «Раскладка»), поэтому пути из спека устарели: `shared/auth.py` → `shared/auth/session.py`, `shared/names.py` → `shared/people/names.py`, `shared/models.py` → `shared/<домен>/models.py`, `python -m admin_service.refdata` → `python -m admin_service.src.refdata` (и так же `seed`, `auth_service.src.users`), настройки ruff и pytest — в `ruff.toml` и `pytest.ini` вместо `pyproject.toml`. Ревизии миграций переименованы по дате (`20261013_0001`, `20261018_0002`); на стенде со старыми номерами — `UPDATE alembic_version SET version_num = '20261018_0002'` перед `docker compose up`.
+- Кафедра — только из справочника `departments`. Редактор работы и форма человека с неизвестной кафедрой получают 400 `bad_department`. Импорт неизвестную кафедру (опечатку ИИ или таблицы) не заводит, а оставляет поле пустым для модератора. Новую кафедру заводит только `seed people` из CSV сотрудников. Во фронте кафедра выбирается из списка, а не вводится текстом.
+- Профиль ВКР берётся регуляркой по подписи на титульнике («Профиль», «Направленность (профиль)», «Магистерская программа», «Специализация»), а не моделью: без подписи LLM подставляла туда направление с уверенностью 0,85. В схему ответа LLM все поля внесены как обязательные (`required`), а в запрос добавлен `reasoning_effort: "none"`: Ollama не понимает `chat_template_kwargs`, и без этого Qwen3.5 тратила все токены на рассуждения. Модель на стенде — `qwen3.5:4b` (бенчмарк — `bench/REPORT.md`).

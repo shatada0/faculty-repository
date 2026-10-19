@@ -6,7 +6,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-import shared.models  # noqa: F401 — все модели в metadata
+import shared.db.registry  # noqa: F401 — все модели в metadata
 from shared.config import database_config
 from shared.db.base import Base
 

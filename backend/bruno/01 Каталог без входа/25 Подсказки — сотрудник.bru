@@ -1,0 +1,16 @@
+meta {
+  name: Подсказки — сотрудник
+  type: http
+  seq: 25
+}
+
+get {
+  url: {{baseUrl}}/api/works/suggest?q=Орлов
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.people[0].fullName: contains Орлов
+}

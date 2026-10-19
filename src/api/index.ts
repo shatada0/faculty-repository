@@ -3,7 +3,7 @@ import { api, download, qs, upload, type Query } from './client'
 import type {
   AccessLevel, AdminPersonCard, AdminPersonListItem, AdminSummary, AdminWork, Department, DoiConflict, Facets, FileLink, Import, ImportItem,
   ImportPreview, Material, MaterialKind, MaterialStatus, MyWork, Page, Person, PersonMetrics, PersonProfile, PublicWork, StaffListItem, Stats,
-  Subject, SubjectScheme, TalkEvent, UnmatchedAuthor, UploadLimits, User, WorkType,
+  Subject, SubjectScheme, Suggestions, TalkEvent, UnmatchedAuthor, UploadLimits, User, WorkType,
 } from './types'
 
 export { ApiError, reportError } from './client'
@@ -13,6 +13,7 @@ export const getStats = () => api<Stats>('/stats')
 export const getWorks = (q: Query) => api<Page<PublicWork>>(`/works${qs(q)}`)
 export const getLatestWorks = () => api<PublicWork[]>('/works/latest')
 export const getFacets = (q: Query) => api<Facets>(`/works/facets${qs(q)}`)
+export const getSuggestions = (q: string) => api<Suggestions>(`/works/suggest${qs({ q })}`)
 export const getWork = (id: string) => api<PublicWork>(`/works/${id}`)
 export const getWorkFile = (id: string) => api<FileLink>(`/works/${id}/file`)
 export const getCitation = (id: string) => api<{ gost: string }>(`/works/${id}/citation`)

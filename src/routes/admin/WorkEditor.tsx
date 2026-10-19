@@ -282,11 +282,9 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
         )}
         <div className="grid gap-4 sm:grid-cols-3">
           <F name="year" label="Год">{(id) => <Input id={id} type="number" inputMode="numeric" {...register('year', { setValueAs: (v) => (v === '' || v == null ? undefined : Number(v)) })} aria-invalid={!!errors.year} />}</F>
+          {/* only reference departments: the server rejects anything else */}
           <F name="department" label="Кафедра" className="sm:col-span-2">{(id) => (
-            <>
-              <Input id={id} list="departments" {...register('department')} aria-invalid={!!errors.department} />
-              <datalist id="departments">{departments.map((d) => <option key={d.name} value={d.name} />)}</datalist>
-            </>
+            <Select id={id} {...register('department')} aria-invalid={!!errors.department}><option value="">—</option>{departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</Select>
           )}</F>
         </div>
       </section>

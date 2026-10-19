@@ -1,0 +1,17 @@
+meta {
+  name: Подсказки — пустой запрос
+  type: http
+  seq: 26
+}
+
+get {
+  url: {{baseUrl}}/api/works/suggest?q=
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+  res.body.works: length 0
+  res.body.people: length 0
+}
