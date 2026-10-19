@@ -148,6 +148,7 @@ class Material(Base):
     uploaded_at: Mapped[datetime] = created()
     decided_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     decided_at: Mapped[datetime | None]
+    reject_reason: Mapped[str | None] = mapped_column(Text)
 
     # Только admin_service: у роли catalog нет доступа к users.
     uploader: Mapped[User | None] = relationship(foreign_keys=[uploaded_by], lazy="raise")

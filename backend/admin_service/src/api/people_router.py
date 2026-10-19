@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/admin", dependencies=[Depends(require_moderator)
 @router.get("/people")
 async def people(
     service: People,
+    user: Moderator,
     q: Q = None,
     kind: Literal["staff", "student", "graduate", "external"] | None = None,
     department: Annotated[str | None, Query(max_length=300)] = None,
@@ -25,7 +26,7 @@ async def people(
     pageSize: Annotated[int, Query(ge=1, le=200)] = 50,
 ) -> dict:
     if unmatched:
-        return await service.unmatched()
+        return await service.unmatched(user)
     return await service.list(q=q, kind=kind, department=department, exclude=exclude, page=page, page_size=pageSize)
 
 
@@ -35,8 +36,8 @@ async def create_person(body: PersonIn, service: People) -> dict:
 
 
 @router.post("/people/match")
-async def match_author(body: MatchRequest, service: People) -> dict:
-    return await service.match(body.displayName, body.personId, body.kind)
+async def match_author(body: MatchRequest, service: People, user: Moderator) -> dict:
+    return await service.match(body.displayName, body.personId, body.kind, user)
 
 
 @router.get("/people/{person_id:uuid}")

@@ -16,7 +16,7 @@ from shared.repository.people_repository import PersonRepository
 from shared.repository.works_repository import WorkRepository
 from shared.uow import uow_ro_factory, uow_write_factory
 from shared.works import labels as L
-from shared.works.checks import errors, unsure
+from shared.works.checks import errors, live_meta, unsure
 from shared.works.schemas import parse_write
 from tests.fakes import FakeStorage
 
@@ -165,3 +165,9 @@ def test_initials_before_surname_read_as_usual_order() -> None:
     assert surname_first("Р.И. Степанов") == "Степанов Р. И."
     assert surname_first("Степанов Роман Игоревич") == "Степанов Роман Игоревич"  # полное ФИО не трогаем
     assert surname_first("Степанов Р. И.") == "Степанов Р. И."
+
+
+def test_field_source_only_for_filled_fields() -> None:
+    data = {"department": None, "direction": {"code": None, "name": ""}, "keywords": [], "title": "T", "pages": 0}
+    meta = {k: {"source": "ai", "confidence": 0.85} for k in [*data, "subjects"]}
+    assert live_meta(data, meta).keys() == {"title", "pages", "subjects"}

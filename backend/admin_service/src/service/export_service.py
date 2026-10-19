@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import os
 import tempfile
 import zipfile
 from collections.abc import AsyncIterator, Iterator
@@ -12,11 +13,12 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from botocore.exceptions import ClientError
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from sqlalchemy import func, select
 
-from admin_service.src.service.works_service import WorkService
+from admin_service.src.service.works_service import conditions
 from shared.auth.session import SessionUser
 from shared.config import app_config
 from shared.imports.tables import TEMPLATES, csv_line, xlsx_cell
@@ -157,7 +159,7 @@ class ExportService:
 
     async def _works(self, filters: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         """Работы по фильтрам «Всех работ» пачками: память не растёт с числом работ."""
-        conditions = WorkService._conditions(**filters)
+        where = conditions(**filters)
         async with self.uow_factory() as uow:
             # степень руководителя — из карточки человека; сотрудников сотни, словарь на всю выгрузку
             degrees = dict(
@@ -169,7 +171,7 @@ class ExportService:
             )
         last = None
         while True:
-            stmt = select(Work).where(*conditions).order_by(Work.id).limit(CHUNK_ROWS)
+            stmt = select(Work).where(*where).order_by(Work.id).limit(CHUNK_ROWS)
             if last:
                 stmt = stmt.where(Work.id > last)
             async with self.uow_factory() as uow:
@@ -194,7 +196,9 @@ class ExportService:
         async for row in rows:
             ws.append([xlsx_cell(ws, v) for v in row])
             count += 1
-        path = Path(tempfile.mkstemp(suffix=".xlsx")[1])
+        fd, name = tempfile.mkstemp(suffix=".xlsx")
+        os.close(fd)  # openpyxl открывает файл по пути сам; незакрытый fd утекал бы на каждой выгрузке
+        path = Path(name)
         await asyncio.to_thread(wb.save, path)
         return path, count
 
@@ -233,12 +237,14 @@ class ExportService:
 
         async def csv_body() -> AsyncIterator[bytes]:
             # utf-8-sig и «;»: без BOM русский Excel покажет кракозябры, запятую он разделителем не считает
-            yield csv_line(header(work_type)).encode("utf-8-sig")
             count = 0
-            async for d in self._works(filters):
-                yield csv_line(_row(d, work_type)).encode("utf-8")
-                count += 1
-            self._audit(user, "works.csv", filters, count)
+            try:
+                yield csv_line(header(work_type)).encode("utf-8-sig")
+                async for d in self._works(filters):
+                    yield csv_line(_row(d, work_type)).encode("utf-8")
+                    count += 1
+            finally:  # оборванная загрузка — тоже выгрузка: в лог с тем, что успели отдать
+                self._audit(user, "works.csv", filters, count)
 
         return attachment(csv_body(), name, "text/csv; charset=utf-8")
 
@@ -254,22 +260,35 @@ class ExportService:
                 yield _row(d, work_type)
 
         async def body() -> AsyncIterator[bytes]:
-            path, count = await self._xlsx(rows(), header(work_type))
-            pipe = _Pipe()
-            with zipfile.ZipFile(pipe, "w", compression=zipfile.ZIP_STORED) as zf:
-                await asyncio.to_thread(zf.write, path, "works.xlsx")
-                path.unlink(missing_ok=True)
+            count = files = 0
+            try:
+                path, count = await self._xlsx(rows(), header(work_type))
+                pipe = _Pipe()
+                with zipfile.ZipFile(pipe, "w", compression=zipfile.ZIP_STORED) as zf:
+                    await asyncio.to_thread(zf.write, path, "works.xlsx")
+                    path.unlink(missing_ok=True)
+                    yield pipe.take()
+                    for work_id, key in keys:
+                        # Первый кусок — до записи в архив: пропавший объект иначе оборвал бы zip на полпути
+                        chunks = self.storage.stream(key)
+                        try:
+                            first = await anext(chunks, b"")
+                        except ClientError as e:
+                            logger.warning(
+                                "Файла нет в хранилище", extra={"work_id": work_id, "key": key, "error": repr(e)}
+                            )
+                            continue
+                        ext = key[key.rfind(".") :] if "." in key.rsplit("/", 1)[-1] else ".pdf"
+                        info = zipfile.ZipInfo(f"files/{work_id}{ext}", date.today().timetuple()[:6])
+                        with zf.open(info, "w", force_zip64=True) as out:
+                            out.write(first)
+                            async for chunk in chunks:
+                                out.write(chunk)
+                                yield pipe.take()
+                        files += 1
                 yield pipe.take()
-                for work_id, key in keys:
-                    ext = key[key.rfind(".") :] if "." in key.rsplit("/", 1)[-1] else ".pdf"
-                    with zf.open(
-                        zipfile.ZipInfo(f"files/{work_id}{ext}", date.today().timetuple()[:6]), "w", force_zip64=True
-                    ) as out:
-                        async for chunk in self.storage.stream(key):
-                            out.write(chunk)
-                            yield pipe.take()
-            yield pipe.take()
-            self._audit(user, "works.zip", filters, count, len(keys))
+            finally:  # как у csv: оборванный архив тоже в лог, с числом отданных файлов
+                self._audit(user, "works.zip", filters, count, files)
 
         return attachment(body(), f"работы-{date.today().isoformat()}.zip", "application/zip")
 

@@ -82,14 +82,14 @@ function countsFor(pid: string, works = visibleWorks()): PersonCounts {
 
 export function departments(): { items: Department[] } {
   const staff = activePeople().filter((p) => p.kind === 'staff' && p.department).sort((a, b) => a.fullName.localeCompare(b.fullName, 'ru'))
-  const works = visibleWorks().filter((w) => w.type === 'publication' || w.type === 'talk')
+  const works = visibleWorks()
   const m = new Map<string, MockPerson[]>()
   for (const p of staff) m.set(p.department!, [...(m.get(p.department!) ?? []), p])
   return {
     items: [...m].sort(([a], [b]) => a.localeCompare(b, 'ru')).map(([name, people]) => ({
       name,
       staffCount: people.length,
-      workCount: works.filter((w) => people.some((p) => asAuthor(w, p.id))).length,
+      workCount: works.filter((w) => w.department === name).length, // as the catalog's «Кафедра» facet
       people: people.slice(0, 3).map((p) => ({ id: p.id, shortName: shortName(p.fullName) })),
     })),
   }
@@ -387,6 +387,8 @@ export function facets(sp: URLSearchParams) {
 // ---------- admin ----------
 export const LOW_CONFIDENCE = 0.7
 const unsure = (m: FieldMeta) => m.source === 'ai' && (m.confidence ?? 1) < LOW_CONFIDENCE
+const unfilled = (v: unknown): boolean => v == null || v === '' || (Array.isArray(v) && !v.length) ||
+  (typeof v === 'object' && !Array.isArray(v) && Object.values(v as object).every(unfilled))
 
 /** Admin view of a work: what blocks publishing, what a moderator should look at, the import's file name. */
 /** A new work with the defaults the editor starts from. */
@@ -428,7 +430,10 @@ export const canDo = (w: AdminWork, a: WorkAction) => ACTIONS[w.status].includes
 export function withChecks(w: AdminWork): AdminWork {
   const r = schemaFor(w.type).safeParse(w)
   const errors = r.success ? [] : r.error.issues.map((i) => ({ field: i.path.join('.'), message: i.message }))
-  const fieldMeta = Object.fromEntries(Object.entries(w.fieldMeta ?? {}).map(([k, m]) => [k, { ...m, lowConfidence: unsure(m) || undefined }]))
+  // a source only for a filled field: an unknown department is dropped on import, «ИИ, 85%» must not stay
+  const fieldMeta = Object.fromEntries(Object.entries(w.fieldMeta ?? {})
+    .filter(([k]) => !unfilled((w as unknown as Record<string, unknown>)[k]))
+    .map(([k, m]) => [k, { ...m, lowConfidence: unsure(m) || undefined }]))
   const unmatchedNames = [...new Set(allAuthorRefs(w).filter((a) => !a.personId).map((a) => a.displayName))]
   const issues = [
     ...errors.map((e) => e.message),
@@ -579,7 +584,10 @@ export function unmatched() {
     if (!m.has(a.displayName)) m.set(a.displayName, new Set())
     m.get(a.displayName)!.add(w.id)
   }
-  const items = [...m].map(([displayName, ids]) => ({ displayName, count: ids.size, workIds: [...ids], suggestions: suggestions(displayName) }))
+  const items = [...m].map(([displayName, ids]) => ({
+    displayName, count: ids.size, workIds: [...ids], suggestions: suggestions(displayName),
+    works: [...ids].map((id) => ({ id, title: db.works.find((w) => w.id === id)?.title || 'Без названия' })),
+  }))
   items.sort((a, b) => a.displayName.localeCompare(b.displayName, 'ru'))
   return { items, total: items.length }
 }
@@ -869,6 +877,18 @@ export function advance(imp: MockImport) {
   }
   imp.stats = stats(imp.items)
   if (imp.items.every((i) => i.status !== 'pending' && i.status !== 'extracted')) imp.status = 'done'
+}
+
+/** «Повторить»: failed files go back in the queue; a broken scan just fails again. */
+export function retryImport(imp: MockImport): boolean {
+  const failed = imp.kind === 'archive' ? imp.items.filter((i) => i.status === 'error') : []
+  const t = Date.now()
+  failed.forEach((it, n) => {
+    it.result ??= { status: 'error', error: it.error }
+    Object.assign(it, { status: 'pending', error: undefined, readyAt: t + 3000 * (n + 1) })
+  })
+  if (failed.length) imp.status = 'processing'
+  return failed.length > 0
 }
 
 export const publicItem = ({ readyAt, result, draft, ...rest }: MockItem) => rest

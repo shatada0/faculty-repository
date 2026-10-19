@@ -1,6 +1,6 @@
 """PersonIn — тело формы человека: его разбирает роутер и принимает сервис, поэтому отдельным модулем."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -20,4 +20,4 @@ class PersonIn(BaseModel):
     academicTitle: Short = Field(None, max_length=300)
     orcid: Short = Field(None, max_length=19)
     affiliation: Short = Field(None, max_length=500)
-    aliases: list[str] | None = Field(None, max_length=50)
+    aliases: list[Annotated[str, Field(max_length=300)]] | None = Field(None, max_length=50)

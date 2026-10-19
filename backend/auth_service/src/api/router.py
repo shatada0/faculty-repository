@@ -14,13 +14,15 @@ from shared.config import auth_config
 from shared.context import get_context
 
 router = APIRouter(prefix="/api/auth", tags=["Auth"])
+# данные пользователя: ни браузер (bfcache, после выхода), ни прокси не хранят
+NO_STORE = {"Cache-Control": "no-store"}
 
 
 @router.post("/login")
 async def login(body: LoginRequest, request: Request, service: Service) -> JSONResponse:
     ip = request.headers.get("x-forwarded-for") or (request.client.host if request.client else None)
     user, token = await service.login(body.login, body.password, ip)
-    response = JSONResponse({"user": user_dict(user)})
+    response = JSONResponse({"user": user_dict(user)}, headers=NO_STORE)
     # Префикс __Host- запрещает Domain: страница на другом поддомене вуза не подложит свою куку.
     response.set_cookie(
         auth_config.cookie_name,
@@ -36,8 +38,9 @@ async def login(body: LoginRequest, request: Request, service: Service) -> JSONR
 
 @router.post("/logout", status_code=204)
 async def logout(service: Service) -> Response:
-    if user_id := get_context().user_id:
-        await service.logout(UUID(user_id))
+    ctx = get_context()
+    if ctx.user_id:
+        await service.logout(UUID(ctx.user_id), ctx.token_version)
     response = Response(status_code=204)
     response.delete_cookie(
         auth_config.cookie_name, path="/", httponly=True, secure=auth_config.cookie_secure, samesite="lax"
@@ -46,6 +49,6 @@ async def logout(service: Service) -> Response:
 
 
 @router.get("/me")
-async def me(user: Annotated[SessionUser, Depends(current_user)]) -> dict:
+async def me(user: Annotated[SessionUser, Depends(current_user)]) -> JSONResponse:
     """Ещё и auth_request nginx: аноним получает 401 до приёма тела загрузки."""
-    return {"user": user_dict(user)}
+    return JSONResponse({"user": user_dict(user)}, headers=NO_STORE)

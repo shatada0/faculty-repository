@@ -77,8 +77,8 @@ async def get_work(service: Works, work_id: UUID) -> dict:
 
 
 @router.patch("/works/{work_id:uuid}")
-async def patch_work(body: JsonObject, service: Works, work_id: UUID) -> dict:
-    return await service.patch(work_id, body)
+async def patch_work(body: JsonObject, service: Works, user: Moderator, work_id: UUID) -> dict:
+    return await service.patch(work_id, body, user)
 
 
 @router.post("/works/{work_id:uuid}/file")
@@ -100,7 +100,7 @@ async def material_link(service: Works, work_id: UUID, material_id: UUID) -> dic
 async def review_material(
     body: MaterialDecision, service: Works, user: Moderator, work_id: UUID, material_id: UUID
 ) -> dict:
-    return await service.review_material(work_id, material_id, body.status, user)
+    return await service.review_material(work_id, material_id, body.status, user, body.reason)
 
 
 @router.post("/works/{work_id:uuid}/publish")
@@ -119,8 +119,8 @@ async def reject(body: RejectRequest, service: Works, user: Moderator, work_id: 
 
 
 @router.post("/works/{work_id:uuid}/doi")
-async def fill_from_doi(body: DoiRequest, service: Works, work_id: UUID) -> dict:
-    return await service.fill_from_doi(work_id, body.doi, body.overwrite)
+async def fill_from_doi(body: DoiRequest, service: Works, user: Moderator, work_id: UUID) -> dict:
+    return await service.fill_from_doi(work_id, body.doi, body.overwrite, user)
 
 
 @router.get("/events")

@@ -45,6 +45,8 @@ export const createImport = (form: FormData, onProgress?: (f: number) => void, s
   upload<Import>('/admin/imports', form, onProgress, signal)
 export const getImports = () => api<Import[]>('/admin/imports')
 export const getImport = (id: string, q: Query = {}) => api<{ import: Import; items: ImportItem[] }>(`/admin/imports/${id}${qs(q)}`)
+/** Files that failed (the AI was down, the network dropped) go back to the worker. */
+export const retryImport = (id: string) => api<{ import: Import; items: ImportItem[] }>(`/admin/imports/${id}/retry`, { method: 'POST' })
 export const previewImportTable = (workType: WorkType, file: File) => {
   const form = new FormData()
   form.append('workType', workType)
@@ -86,8 +88,8 @@ export const fillFromDoi = (id: string, doi: string, overwrite: string[] = []) =
   api<{ work: AdminWork; conflicts: DoiConflict[] }>(`/admin/works/${id}/doi`, { method: 'POST', json: { doi, overwrite } })
 export const getUploadLimits = () => api<UploadLimits>('/upload-limits')
 export const getAdminMaterialLink = (workId: string, id: string) => api<FileLink>(`/admin/works/${workId}/materials/${id}`)
-export const reviewMaterial = (workId: string, id: string, status: MaterialStatus) =>
-  api<AdminWork>(`/admin/works/${workId}/materials/${id}`, { method: 'POST', json: { status } })
+export const reviewMaterial = (workId: string, id: string, status: MaterialStatus, reason = '') =>
+  api<AdminWork>(`/admin/works/${workId}/materials/${id}`, { method: 'POST', json: { status, reason } })
 /** Search a classifier (ГРНТИ, ОЕСР, WoS, ASJC) by code or name. */
 export const searchClassifier = (scheme: SubjectScheme, q: string) => api<Subject[]>(`/admin/classifiers/${scheme}${qs({ q })}`)
 export const getEvents = (q: string) => api<TalkEvent[]>(`/admin/events${qs({ q })}`)

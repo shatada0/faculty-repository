@@ -154,7 +154,7 @@ export type WorkAction = 'publish' | 'unpublish' | 'reject'
 export type MaterialKind = 'text' | 'slides' | 'data' | 'other'
 export type MaterialStatus = 'pending' | 'approved' | 'rejected'
 /** A file an author (or moderator) attached to a work; authors' uploads wait for a moderator. */
-export interface Material { id: string; name: string; size: number; kind: MaterialKind; status: MaterialStatus; uploadedBy: string; uploadedAt: string }
+export interface Material { id: string; name: string; size: number; kind: MaterialKind; status: MaterialStatus; uploadedBy: string; uploadedAt: string; rejectReason?: string | null }
 
 // Admin responses carry every field (null when empty, as pydantic serializes); the editor sends null for cleared fields.
 export interface WorkAdminMeta {
@@ -298,6 +298,7 @@ export interface UnmatchedAuthor {
   displayName: string
   count: number
   workIds: string[]
+  works: { id: string; title: string }[]
   suggestions: Person[]
 }
 

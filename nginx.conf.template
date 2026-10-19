@@ -51,6 +51,9 @@ server {
     # ответ в формате API: экран входа покажет текст, а не «Ошибка сервера (429)»
     error_page 429 = @too_many;
     location @too_many { default_type application/json; return 429 '{"error":{"code":"rate_limited","message":"Слишком много попыток. Подождите минуту"}}'; }
+    # 401 от auth_request nginx пишет HTML; 401 самих сервисов сюда не попадают (proxy_intercept_errors off)
+    error_page 401 = @unauthorized;
+    location @unauthorized { default_type application/json; return 401 '{"error":{"code":"unauthorized","message":"Нужен вход"}}'; }
     location = /api/auth/login     { limit_req zone=login burst=5 nodelay; proxy_pass http://auth_service; }
     location /api/auth/            { proxy_pass http://auth_service; }
 

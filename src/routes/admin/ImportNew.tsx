@@ -6,6 +6,7 @@ import type { ImportPreview, WorkType } from '@/api/types'
 import { FileDrop } from '@/components/FileDrop'
 import { TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, cn } from '@/components/ui'
+import { useTitle } from '@/components/Layout'
 
 const VARIANTS = [
   // ВКР или курсовая — сервер узнаёт по титульнику каждого файла, поэтому вариант один
@@ -50,6 +51,7 @@ function TablePreview({ p }: { p: ImportPreview }) {
 export default function ImportNew() {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  useTitle('Новый импорт')
   const [variant, setVariant] = useState<Variant>(VARIANTS[0])
   const [file, setFile] = useState<File | null>(null)
   const [files, setFiles] = useState<File[]>([]) // archive: PDFs and ZIPs

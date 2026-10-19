@@ -9,7 +9,7 @@ import {
 import type { AdminWork, AuthorRef, DoiConflict, FieldMeta, MaterialStatus, SubjectScheme, TalkEvent, WorkType } from '@/api/types'
 import { AuthorsEditor } from '@/components/AuthorsEditor'
 import { FileDrop } from '@/components/FileDrop'
-import { NotFound } from '@/components/Layout'
+import { NotFound, useTitle } from '@/components/Layout'
 import { SubjectsEditor } from '@/components/SubjectsEditor'
 import { FieldSourceBadge, MaterialStatusBadge, StatusBadge, TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Tabs, Textarea, cn } from '@/components/ui'
@@ -69,7 +69,13 @@ function PdfPane({ id }: { id: string }) {
   const q = useQuery({ queryKey: ['admin-work-file', id], queryFn: () => getAdminWorkFile(id), staleTime: 5 * 60_000 })
   if (q.isPending) return <Spinner label="Загрузка файла…" />
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />
-  return <iframe src={q.data.url} title="Текст работы" className="h-[75vh] w-full border border-rule bg-white" />
+  // The browser may refuse to show the file inline (blocked third-party frame, untrusted certificate): a link always works.
+  return (
+    <div className="space-y-1">
+      <a href={q.data.url} target="_blank" rel="noreferrer" className="text-sm">Открыть файл в новой вкладке ↗</a>
+      <iframe src={q.data.url} title="Текст работы" className="h-[75vh] w-full border border-rule bg-white" />
+    </div>
+  )
 }
 
 function TypeChooser() {
@@ -96,6 +102,7 @@ export default function WorkEditor() {
   const newType = !id && type && TYPES.includes(type) ? type : null
   const saved = useQuery({ queryKey: ['admin-work', id], queryFn: () => getAdminWork(id!), enabled: !!id })
   const template = useQuery({ queryKey: ['admin-work-template', newType], queryFn: () => getWorkTemplate(newType!), enabled: !!newType, staleTime: Infinity })
+  useTitle(id ? saved.data?.title || saved.data?.originalFileName : 'Новая работа')
   if (!id && !newType) return <TypeChooser />
   const q = id ? saved : template
   if (q.isError) return q.error instanceof ApiError && q.error.status === 404 ? <NotFound text="Работа не найдена" /> : <ErrorState error={q.error} onRetry={() => q.refetch()} />
@@ -112,7 +119,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
   const limits = useQuery({ queryKey: ['upload-limits'], queryFn: getUploadLimits, staleTime: Infinity })
   const type = initial.type
   const form = useForm<FormValues>({ defaultValues: toForm(initial) })
-  const { register, control, watch, setValue, getValues, formState, reset, setError, clearErrors } = form
+  const { register, control, watch, setValue, getValues, formState, reset, resetField, setError, clearErrors } = form
   const [busy, setBusy] = useState<string>()
   const location = useLocation()
   const [message, setMessage] = useState<{ tone: 'blue' | 'red'; text: string } | undefined>(
@@ -153,6 +160,8 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
 
   const refresh = (saved: AdminWork) => {
     qc.setQueryData(['admin-work', saved.id], saved)
+    // publish, materials and file bump updatedAt too: without it the next save of the open form would be refused as stale
+    resetField('updatedAt', { defaultValue: saved.updatedAt })
     qc.invalidateQueries({ predicate: (x) => ['admin-works', 'admin-unmatched', 'admin-people', 'works', 'facets', 'stats', 'person', 'personWorks', 'work', 'staff'].includes(String(x.queryKey[0])) })
   }
 
@@ -208,7 +217,12 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
     setRejecting(false)
     setMessage({ tone: 'blue', text: 'Работа отклонена' })
   })
-  const onMaterial = (mid: string, st: MaterialStatus) => run('material', async () => { refresh(await reviewMaterial(work!.id, mid, st)) })
+  const onMaterial = (mid: string, st: MaterialStatus) => {
+    // the author sees the reason in «Мои работы»; Cancel keeps the material as it is
+    const reason = st === 'rejected' ? window.prompt('Причина отклонения (её увидит автор)', '') : ''
+    if (reason === null) return
+    run('material', async () => { refresh(await reviewMaterial(work!.id, mid, st, reason)) })
+  }
   const onNext = () => run('next', async () => {
     const { id: nextId } = await getNextInQueue({ after: work?.id, type: sp.get('type'), importId: sp.get('importId') })
     if (!nextId) return setMessage({ tone: 'blue', text: 'В очереди больше нет черновиков' })
@@ -262,16 +276,15 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
     if (err) return setMessage({ tone: 'red', text: err })
     if (!f || !work) return
     run('upload', async () => {
-      const saved = await uploadWorkFile(work.id, f)
-      qc.setQueryData(['admin-work', saved.id], saved)
-      qc.invalidateQueries({ queryKey: ['admin-work-file', saved.id] })
+      refresh(await uploadWorkFile(work.id, f))
+      qc.invalidateQueries({ queryKey: ['admin-work-file', work.id] })
     })
   }
 
   const formEl = (
     <div className="space-y-6">
       <section className="space-y-4">
-        <F name="title" label="Название">{(id, d) => <Textarea id={id} aria-describedby={d} rows={2} {...register('title')} aria-invalid={!!errors.title} />}</F>
+        <F name="title" label="Название">{(id, d) => <Textarea id={id} aria-describedby={d} rows={3} {...register('title')} aria-invalid={!!errors.title} />}</F>
         <F name="authors" label="Авторы (порядок как в работе)">{() => (
           <AuthorsEditor name="authors" label="Авторы" defaultKind={isStudent ? 'student' : 'staff'} onChanged={() => clearErrors('authors')} />
         )}</F>
@@ -283,8 +296,9 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
         <div className="grid gap-4 sm:grid-cols-3">
           <F name="year" label="Год">{(id) => <Input id={id} type="number" inputMode="numeric" {...register('year', { setValueAs: (v) => (v === '' || v == null ? undefined : Number(v)) })} aria-invalid={!!errors.year} />}</F>
           {/* only reference departments: the server rejects anything else */}
+          {/* key: options arrive after mount, and a registered select keeps showing «—» until it is mounted again */}
           <F name="department" label="Кафедра" className="sm:col-span-2">{(id) => (
-            <Select id={id} {...register('department')} aria-invalid={!!errors.department}><option value="">—</option>{departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</Select>
+            <Select key={departments.length} id={id} {...register('department')} aria-invalid={!!errors.department}><option value="">—</option>{departments.map((d) => <option key={d.name} value={d.name}>{d.name}</option>)}</Select>
           )}</F>
         </div>
       </section>
@@ -394,7 +408,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
 
       {relatedType && (
         <F name={relatedKey} label={type === 'publication' ? 'Связанный доклад' : 'Связанная публикация (тезисы, статья)'} hint="Показаны работы с общими авторами">{(id) => (
-          <Select id={id} {...register(relatedKey)}>
+          <Select key={related.data?.length} id={id} {...register(relatedKey)}>
             <option value="">— нет —</option>
             {related.data?.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
           </Select>
@@ -458,11 +472,11 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
           {status === 'rejected' && work?.rejectReason && <Alert tone="red" title="Отклонена">{work.rejectReason}</Alert>}
 
           {hasFile && (
-            <Tabs className="lg:hidden" value={pane} onChange={setPane} items={[{ value: 'card', label: 'Карточка' }, { value: 'file', label: 'Файл' }]} />
+            <Tabs className="xl:hidden" value={pane} onChange={setPane} items={[{ value: 'card', label: 'Карточка' }, { value: 'file', label: 'Файл' }]} />
           )}
-          <div className={cn(hasFile && 'lg:grid lg:grid-cols-2 lg:gap-10')}>
-            {hasFile && <div className={cn('lg:sticky lg:top-20 lg:block lg:self-start', pane === 'file' ? 'block' : 'hidden')}><PdfPane id={work!.id} /></div>}
-            <Card className={cn(hasFile && pane === 'file' && 'hidden lg:block')}>
+          <div className={cn(hasFile && 'xl:grid xl:grid-cols-2 xl:gap-10')}>
+            {hasFile && <div className={cn('xl:sticky xl:top-20 xl:block xl:self-start', pane === 'file' ? 'block' : 'hidden')}><PdfPane id={work!.id} /></div>}
+            <Card className={cn(hasFile && pane === 'file' && 'hidden xl:block')}>
               {formEl}
               {work && work.materials.length > 0 && (
                 <section className="mt-6 space-y-1 border-t border-rule pt-4">

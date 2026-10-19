@@ -6,7 +6,8 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import UploadFile
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, func, or_, select
+from sqlalchemy.dialects.postgresql import distinct_on
 
 from admin_service.src.service import doi as crossref
 from shared.auth.session import SessionUser
@@ -21,7 +22,7 @@ from shared.storage import Storage, detect_type
 from shared.uow import UnitOfWork, UnitOfWorkFactory
 from shared.works import STUDENT_TYPES, WORK_TYPES, Material, Work, WorkPerson
 from shared.works import labels as L
-from shared.works.checks import ACTIONS, admin_dict, check_work, errors
+from shared.works.checks import ACTIONS, admin_dict, blank, check_work, errors
 from shared.works.schemas import RELATED, CommonIn, apply_write, comparable, parse_write, template, work_dict
 
 logger = get_logger(__name__)
@@ -30,23 +31,45 @@ DOI_FIELDS = ("title", "authors", "venue", "year", "volume", "issue", "pages", "
 CONTENT_TYPES = {"pdf": "application/pdf"}
 
 
-def _blank(v: Any) -> bool:
-    return v is None or v == ""
-
-
 def same(a: Any, b: Any) -> bool:
-    return (_blank(a) and _blank(b)) or a == b
+    return (blank(a) and blank(b)) or a == b
 
 
-def _empty(v: Any) -> bool:
-    """Пустая строка авторов ({displayName: ''}) тоже пустая."""
-    return _blank(v) or (isinstance(v, list) and all(isinstance(x, dict) and not x.get("displayName") for x in v))
+def _no_authors(v: Any) -> bool:
+    """Пустое поле для DOI; строка авторов без ФИО ({displayName: ''}) тоже пустая."""
+    return blank(v) or (isinstance(v, list) and all(isinstance(x, dict) and not x.get("displayName") for x in v))
 
 
 def _shown(v: Any) -> str:
     if isinstance(v, list):
         return ", ".join(str(x.get("displayName") if isinstance(x, dict) else x) for x in v)
-    return "—" if _blank(v) else str(v)
+    return "—" if blank(v) else str(v)
+
+
+def conditions(
+    *,
+    type_: str | None = None,
+    status: str | None = None,
+    import_id: UUID | None = None,
+    year: int | None = None,
+    department: str | None = None,
+    q: str | None = None,
+) -> list:
+    """Фильтры «Всех работ»: те же у списка, очереди и выгрузок."""
+    out = []
+    if type_:
+        out.append(Work.type == type_)
+    if status:
+        out.append(Work.status == status)
+    if import_id:
+        out.append(Work.import_id == import_id)
+    if year:
+        out.append(Work.year == year)
+    if department:
+        out.append(Work.department == department)
+    if q:
+        out.append(or_(matches(q), Work.original_file_name.icontains(q, autoescape=True)))
+    return out
 
 
 async def check_upload(file: UploadFile, rule: str) -> tuple[str, str]:
@@ -111,42 +134,19 @@ class WorkService:
             "pendingMaterials": [{"workId": str(wid), "title": title, "name": name} for wid, title, name in pending],
         }
 
-    @staticmethod
-    def _conditions(
-        *,
-        type_: str | None = None,
-        status: str | None = None,
-        import_id: UUID | None = None,
-        year: int | None = None,
-        department: str | None = None,
-        q: str | None = None,
-    ) -> list:
-        conditions = []
-        if type_:
-            conditions.append(Work.type == type_)
-        if status:
-            conditions.append(Work.status == status)
-        if import_id:
-            conditions.append(Work.import_id == import_id)
-        if year:
-            conditions.append(Work.year == year)
-        if department:
-            conditions.append(Work.department == department)
-        if q:
-            conditions.append(or_(matches(q), Work.original_file_name.icontains(q, autoescape=True)))
-        return conditions
-
-    async def _queue(self, uow: UnitOfWork, conditions: list) -> list[Work]:
+    async def _queue(self, uow: UnitOfWork, where: list) -> list[Work]:
         """Порядок «больше замечаний — выше». ponytail: проверки считаются в Python по всем черновикам;
         при тысячах черновиков число замечаний придётся хранить колонкой."""
-        works = (await uow.session.execute(select(Work).where(*conditions))).scalars().all()
+        works = (await uow.session.execute(select(Work).where(*where))).scalars().all()
         return sorted(works, key=lambda w: (-len(check_work(w)[1]), w.created_at, str(w.id)))
 
     async def list(self, *, sort: str | None, page: int, page_size: int, **filters: Any) -> dict:
-        conditions = self._conditions(**filters)
+        if sort == "problems":
+            filters["status"] = filters.get("status") or "draft"  # очередь — черновики, а не вся таблица в памяти
+        where = conditions(**filters)
         async with self.uow_factory() as uow:
             if sort == "problems":
-                ordered = await self._queue(uow, conditions)
+                ordered = await self._queue(uow, where)
                 total, ids = len(ordered), [w.id for w in ordered[(page - 1) * page_size : page * page_size]]
                 page_works = {
                     w.id: w
@@ -156,20 +156,20 @@ class WorkService:
             else:
                 stmt = (
                     select(Work)
-                    .where(*conditions)
+                    .where(*where)
                     .options(*admin_options())
                     .order_by(Work.updated_at.desc(), Work.id)
                     .offset((page - 1) * page_size)
                     .limit(page_size)
                 )
                 works = list(await self.works.all(uow, stmt))
-                total = await uow.session.scalar(select(func.count()).select_from(Work).where(*conditions))
+                total = await uow.session.scalar(select(func.count()).select_from(Work).where(*where))
             return {"items": await self._admin(uow, works), "total": total}
 
     async def next_in_queue(self, after: UUID | None, type_: str | None, import_id: UUID | None) -> dict:
         """Следующий черновик очереди после after; после только что опубликованного — голова очереди."""
         async with self.uow_factory() as uow:
-            queue = await self._queue(uow, self._conditions(status="draft", type_=type_, import_id=import_id))
+            queue = await self._queue(uow, conditions(status="draft", type_=type_, import_id=import_id))
         ids = [w.id for w in queue]
         if after in ids:
             i = ids.index(after)
@@ -200,16 +200,13 @@ class WorkService:
         name = Work.details[("event", "name")].astext
         stmt = (
             select(Work.details["event"])
+            .ext(distinct_on(name))  # по конференции — последний введённый доклад: город и даты из него
             .where(Work.type == "talk", name.icontains(q, autoescape=True))
             .order_by(name, Work.updated_at.desc())
-            .limit(200)
+            .limit(15)
         )
         async with self.uow_factory() as uow:
-            rows = (await uow.session.execute(stmt)).scalars().all()
-        seen: dict[str, dict] = {}
-        for event in rows:
-            seen.setdefault(event["name"], event)
-        return list(seen.values())[:15]
+            return list((await uow.session.execute(stmt)).scalars())
 
     async def classifiers(self, scheme: str, q: str) -> list[dict]:
         stmt = select(Classifier).where(Classifier.scheme == scheme)
@@ -291,19 +288,19 @@ class WorkService:
 
     async def _save(
         self, uow: UnitOfWork, w: Work, model: CommonIn, before: CommonIn, *, source: str = "manual"
-    ) -> None:
-        """Поля, отличающиеся от прежней версии (у новой — от шаблона), получают источник source."""
+    ) -> list[str]:
+        """Поля, отличающиеся от прежней версии (у новой — от шаблона), получают источник source. → изменённые поля."""
         await self._prepare_refs(uow, model)
         await self._check_subjects(uow, model)
         old, new = comparable(before), comparable(model)
         meta = dict(w.field_meta)
+        changed = []
         for key in model.model_fields_set:
             if key == "event":
-                for sub, value in new["event"].items():
-                    if not same(old["event"].get(sub), value):
-                        meta[f"event.{sub}"] = {"source": source}
+                changed += [f"event.{sub}" for sub, v in new["event"].items() if not same(old["event"].get(sub), v)]
             elif not same(old.get(key), new[key]):
-                meta[key] = {"source": source}
+                changed.append(key)
+        meta |= {key: {"source": source} for key in changed}
         previous_related = w.related_id
         apply_write(w, model)
         if w.type in STUDENT_TYPES and w.access_level == "full" and not w.consent:
@@ -318,6 +315,20 @@ class WorkService:
         uow.session.add(w)
         await self._sync_related(uow, w, previous_related)
         await self.works.refresh_search(uow, [w.id])
+        # Публикацию проверяет publish, но правка уже опубликованной иначе оставила бы в каталоге работу без названия.
+        if w.status == "published":
+            fresh = await self._load(uow, w.id)  # подписи рубрик у новых строк приходят только запросом
+            if errs := errors(work_dict(fresh)):
+                message = "Опубликованная работа должна оставаться полной: " + "; ".join(e["message"] for e in errs)
+                raise UnprocessableError(message, fields=errs)
+        return changed
+
+    @staticmethod
+    def _audit_edit(work_id: UUID, changed: list[str], user: SessionUser, source: str = "manual") -> None:
+        logger.info(
+            "Работа изменена",
+            extra={"audit": True, "work_id": str(work_id), "fields": changed, "source": source, "by": str(user.id)},
+        )
 
     async def create(self, body: dict, user: SessionUser) -> dict:
         work_type = body.get("type")
@@ -330,13 +341,19 @@ class WorkService:
         )
         async with self.uow_factory() as uow:
             await self._save(uow, w, model, before)
-        logger.info("Работа создана", extra={"work_id": str(w.id), "type": work_type})
+        logger.info(
+            "Работа создана", extra={"audit": True, "work_id": str(w.id), "type": work_type, "by": str(user.id)}
+        )
         return await self.get(w.id)
 
-    async def patch(self, work_id: UUID, body: dict) -> dict:
+    async def patch(self, work_id: UUID, body: dict, user: SessionUser) -> dict:
         async with self.uow_factory() as uow:
             w = await self._load(uow, work_id)
-            await self._save(uow, w, parse_write(w.type, body), parse_write(w.type, work_dict(w)))
+            # Форма шлёт updatedAt версии, с которой начали: иначе второй модератор молча затёр бы правки первого.
+            if (seen := body.get("updatedAt")) and seen != w.updated_at.isoformat():
+                raise ConflictError("Работу уже изменили, пока вы её редактировали: обновите страницу", code="stale")
+            changed = await self._save(uow, w, parse_write(w.type, body), parse_write(w.type, work_dict(w)))
+        self._audit_edit(work_id, changed, user)
         return await self.get(work_id)
 
     async def _transition(self, work_id: UUID, action: str, user: SessionUser, **changes: Any) -> dict:
@@ -374,19 +391,24 @@ class WorkService:
         return await self._transition(work_id, "reject", user, status="rejected", reject_reason=reason)
 
     async def bulk(self, ids: list[UUID], action: str, access_level: str | None, user: SessionUser) -> dict:
-        """Каждая работа проверяется по результату: открыть текст студенческой работы можно только с согласием."""
+        """Публикуются только полные работы; уже опубликованные не трогаются.
+        Доступ меняется и у неполных черновиков, кроме открытого текста студенческой работы без согласия."""
         done, skipped = 0, []
         async with self.uow_factory() as uow:
             works = (await uow.session.execute(select(Work).where(Work.id.in_(ids)))).scalars().all()
             for w in works:
-                overrides = {"accessLevel": access_level} if action == "access" else {}
-                if check_work(w, **overrides)[0]:
-                    skipped.append(w.title)
-                    continue
                 if action == "publish":
+                    if w.status == "published":
+                        continue
+                    if check_work(w)[0]:
+                        skipped.append(w.title or "Без названия")
+                        continue
                     w.status, w.reject_reason = "published", None
                     w.published_at = w.published_at or now()
                 else:
+                    if access_level == "full" and w.type in STUDENT_TYPES and not w.consent:
+                        skipped.append(w.title or "Без названия")
+                        continue
                     w.access_level = access_level
                 w.updated_at = now()
                 done += 1
@@ -405,7 +427,7 @@ class WorkService:
 
     # ---------- DOI ----------
 
-    async def fill_from_doi(self, work_id: UUID, raw: str, overwrite: list[str]) -> dict:
+    async def fill_from_doi(self, work_id: UUID, raw: str, overwrite: list[str], user: SessionUser) -> dict:
         """Пустые и нетронутые поля заполняются (источник doi); заполненные и отличающиеся — конфликты, пока их не перечислят."""
         doi = crossref.normalize_doi(raw)
         async with self.uow_factory() as uow:
@@ -423,7 +445,7 @@ class WorkService:
             for key in DOI_FIELDS:
                 if key not in incoming:
                     continue
-                if not _empty(current[key]) and key in w.field_meta:
+                if not _no_authors(current[key]) and key in w.field_meta:
                     if same(current[key], incoming[key]):
                         continue
                     if key not in overwrite:
@@ -437,9 +459,10 @@ class WorkService:
                         )
                         continue
                 changes[key] = incoming[key]
-            await self._save(
+            changed = await self._save(
                 uow, w, parse_write("publication", changes), parse_write("publication", current), source="doi"
             )
+        self._audit_edit(work_id, changed, user, "doi")
         return {"work": await self.get(work_id), "conflicts": conflicts}
 
     async def _ref_to(self, uow: UnitOfWork, name: str, fallback: str = "external") -> dict:
@@ -458,7 +481,12 @@ class WorkService:
         await self.storage.put(key, file.file, content_type)
         async with self.uow_factory() as uow:
             w = await self._load(uow, work_id)
+            old = w.file_key
             w.file_key, w.original_file_name, w.updated_at = key, file.filename, now()
+        # Прежний файл больше не нужен. Удаляем только свой объект работы: демо-работы делят demo/sample.pdf.
+        if old and old.startswith(f"works/{work_id}/"):
+            await self.storage.delete(old)
+        logger.info("Файл работы заменён", extra={"work_id": str(work_id), "key": key, "previous": old})
         return await self.get(work_id)
 
     async def file_link(self, work_id: UUID) -> dict:
@@ -481,10 +509,13 @@ class WorkService:
             m = await self._material(uow, work_id, material_id)
         return await self.storage.presign(m.file_key, m.name, inline=False)
 
-    async def review_material(self, work_id: UUID, material_id: UUID, status: str, user: SessionUser) -> dict:
+    async def review_material(
+        self, work_id: UUID, material_id: UUID, status: str, user: SessionUser, reason: str = ""
+    ) -> dict:
         async with self.uow_factory() as uow:
             m = await self._material(uow, work_id, material_id)
             m.status, m.decided_by, m.decided_at = status, user.id, now()
+            m.reject_reason = reason.strip() or None if status == "rejected" else None
         logger.info(
             "Решение по материалу",
             extra={
@@ -496,14 +527,3 @@ class WorkService:
             },
         )
         return await self.get(work_id)
-
-
-async def relink_unmatched(uow: UnitOfWork, display_name: str, person_id: UUID, kind: str) -> list[UUID]:
-    """Нераспознанный автор с этим написанием → человек во всех работах. Возвращает затронутые работы."""
-    rows = await uow.session.execute(
-        update(WorkPerson)
-        .where(WorkPerson.person_id.is_(None), WorkPerson.display_name == display_name)
-        .values(person_id=person_id, kind=kind)
-        .returning(WorkPerson.work_id)
-    )
-    return list({r[0] for r in rows})

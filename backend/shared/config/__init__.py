@@ -2,7 +2,9 @@
 
 from datetime import timedelta
 from pathlib import Path
+from typing import Self
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
@@ -69,6 +71,15 @@ class AuthConfig(BaseSettings):
     ttl_hours: int = 8
     allowed_origins: list[str] = ["https://localhost"]
     keys_dir: Path = SECRETS_DIR  # jwt_private (только auth_service) и jwt_public
+
+    @model_validator(mode="after")
+    def _host_prefix_needs_secure(self) -> Self:
+        # браузер молча выбросит __Host-куку без Secure: вход вернёт 200, а сессии не будет
+        if self.cookie_name.startswith("__Host-") and not self.cookie_secure:
+            raise ValueError(
+                "кука __Host-… требует AUTH_COOKIE_SECURE=true; для dev по http — AUTH_COOKIE_NAME=session_token"
+            )
+        return self
 
     @property
     def ttl(self) -> timedelta:

@@ -7,6 +7,7 @@ import { NewPersonDialog, PersonPicker } from '@/components/AuthorsEditor'
 import { Alert, Badge, Button, Card, Count, EmptyState, ErrorState, Input, Pagination, Select, Spinner, Tabs } from '@/components/ui'
 import { personKindLabels } from '@/lib/labels'
 import { useDepartments } from '@/routes/People'
+import { useTitle } from '@/components/Layout'
 
 export const invalidatePeople = (qc: ReturnType<typeof useQueryClient>) =>
   qc.invalidateQueries({ predicate: (x) => String(x.queryKey[0]).startsWith('admin') || ['works', 'work', 'person', 'personWorks', 'staff', 'facets'].includes(String(x.queryKey[0])) })
@@ -33,8 +34,8 @@ function UnmatchedCard({ u }: { u: UnmatchedAuthor }) {
         <h3 className="font-semibold">{u.displayName}</h3>
         <span className="text-sm text-muted">
           в <Count n={u.count} forms={['работе', 'работах', 'работах']} />:{' '}
-          {u.workIds.slice(0, 3).map((id, i) => <span key={id}>{i > 0 && ', '}<Link to={`/admin/works/${id}`} className="text-ink hover:underline">{id}</Link></span>)}
-          {u.workIds.length > 3 && '…'}
+          {u.works.slice(0, 3).map((w, i) => <span key={w.id}>{i > 0 && ', '}<Link to={`/admin/works/${w.id}`} className="text-ink hover:underline">«{w.title}»</Link></span>)}
+          {u.works.length > 3 && '…'}
         </span>
       </div>
       {u.suggestions.length > 0 ? (
@@ -45,7 +46,7 @@ function UnmatchedCard({ u }: { u: UnmatchedAuthor }) {
               <Link to={`/admin/people/${p.id}`} className="text-ink hover:underline">{p.fullName}</Link>
               <Badge>{personKindLabels[p.kind]}</Badge>
               {p.department && <span className="text-xs text-muted">{p.department}</span>}
-              <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => link(p.id, p.kind)}>Это он</Button>
+              <Button size="sm" variant="outline" className="ml-auto" disabled={busy} onClick={() => link(p.id, p.kind)}>Связать</Button>
             </div>
           ))}
         </div>
@@ -81,8 +82,9 @@ export default function AdminPeople() {
   const unmatched = sp.get('unmatched') === '1'
   const page = Math.max(1, Number(sp.get('page')) || 1)
   const query = { q: sp.get('q') ?? '', kind: sp.get('kind') ?? '', department: sp.get('department') ?? '' }
-  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); n.delete('page'); return n }, { replace: true })
+  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); n.delete('page'); return n }, { replace: true, preventScrollReset: true })
   const departments = useDepartments().data?.items ?? []
+  useTitle('Люди')
   const people = useQuery({ queryKey: ['admin-people', { ...query, page }], queryFn: () => getAdminPeople({ ...query, page, pageSize: 50 }), enabled: !unmatched, placeholderData: keepPreviousData })
   const unmatchedCount = useQuery({ queryKey: ['admin-unmatched'], queryFn: getUnmatched })
   const [text, setText] = useState(query.q)
@@ -102,7 +104,7 @@ export default function AdminPeople() {
         <Button onClick={() => setCreating(true)}>Добавить человека</Button>
       </div>
       {exportErr && <Alert tone="red">{exportErr}</Alert>}
-      <Tabs value={unmatched ? 'u' : 'all'} onChange={(v) => setSp(v === 'u' ? { unmatched: '1' } : {})}
+      <Tabs value={unmatched ? 'u' : 'all'} onChange={(v) => setSp(v === 'u' ? { unmatched: '1' } : {}, { preventScrollReset: true })}
         items={[{ value: 'all', label: 'Все люди' }, { value: 'u', label: <>Нераспознанные авторы{unmatchedCount.data ? <span className="ml-1.5 bg-warn-bg px-1.5 text-xs text-warn">{unmatchedCount.data.total}</span> : null}</> }]} />
 
       {unmatched ? <Unmatched /> : (

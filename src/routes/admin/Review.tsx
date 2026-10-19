@@ -3,14 +3,23 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { getAdminWorks, getImports } from '@/api'
 import type { WorkType } from '@/api/types'
 import { TypeIcon } from '@/components/WorkCard'
-import { Badge, Card, Count, EmptyState, ErrorState, Select, Spinner } from '@/components/ui'
+import { Alert, Badge, Card, Count, EmptyState, ErrorState, Select, Spinner } from '@/components/ui'
 import { workTypePlural } from '@/lib/labels'
+import { importOption } from './Imports'
+import { useTitle } from '@/components/Layout'
 
 /** Query-string of the queue filters, carried into the editor for "Следующая работа". */
 export const queueParams = (sp: URLSearchParams) => {
   const p = new URLSearchParams({ queue: '1' })
   for (const k of ['type', 'importId']) if (sp.get(k)) p.set(k, sp.get(k)!)
   return p.toString()
+}
+
+/** "ИИ не уверен: Уровень; ИИ не уверен: Год; …" → "проверить: Уровень, Год; …" */
+const UNSURE = 'ИИ не уверен: '
+const issuesText = (issues: string[]) => {
+  const unsure = issues.filter((s) => s.startsWith(UNSURE)).map((s) => s.slice(UNSURE.length))
+  return [...issues.filter((s) => !s.startsWith(UNSURE)), unsure.length > 0 && `проверить: ${unsure.join(', ')}`].filter(Boolean).join('; ')
 }
 
 const reviewQuery = (sp: URLSearchParams) => ({
@@ -23,7 +32,8 @@ export default function Review() {
   const query = reviewQuery(sp)
   const works = useQuery({ queryKey: ['admin-works', query], queryFn: () => getAdminWorks(query), placeholderData: keepPreviousData })
   const imports = useQuery({ queryKey: ['admin-imports'], queryFn: getImports })
-  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n }, { replace: true })
+  useTitle('Очередь проверки')
+  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n }, { replace: true, preventScrollReset: true })
 
   return (
     <div className="space-y-4">
@@ -35,15 +45,19 @@ export default function Review() {
         </Select>
         <Select aria-label="Импорт" value={sp.get('importId') ?? ''} onChange={(e) => set('importId', e.target.value)} className="w-auto max-w-xs">
           <option value="">Все импорты</option>
-          {imports.data?.map((i) => <option key={i.id} value={i.id}>{i.fileName}</option>)}
+          {imports.data?.map((i) => <option key={i.id} value={i.id}>{importOption(i)}</option>)}
         </Select>
-        <span className="self-center text-sm text-muted">Сначала проблемные</span>
+        <p className="self-center text-sm text-muted">Сверху — черновики с замечаниями</p>
       </div>
 
       {works.isError ? <ErrorState error={works.error} onRetry={() => works.refetch()} />
         : works.isPending ? <Spinner />
         : works.data.items.length === 0 ? <EmptyState>Черновиков нет — всё проверено</EmptyState>
         : (
+          <>
+          {works.data.total > works.data.items.length && (
+            <Alert tone="blue">Показаны первые {works.data.items.length} из {works.data.total}. Сузьте список фильтрами по типу или импорту.</Alert>
+          )}
           <Card className="overflow-x-auto">
             <table className="w-full min-w-[44rem] text-sm">
               <thead className="border-b-2 border-brand text-left">
@@ -59,15 +73,19 @@ export default function Review() {
                           <TypeIcon type={w.type} className="mt-0.5 h-4 w-4 shrink-0 text-muted" />
                           <Link to={href} className="font-medium text-ink hover:underline" onClick={(e) => e.stopPropagation()}>{w.title || w.originalFileName || 'Без названия'}</Link>
                         </span>
-                        {w.duplicateOf && <Badge tone="amber" className="ml-6 mt-1">Возможный дубль</Badge>}
                       </td>
                       <td className="p-3 text-ink-2">{w.authors.map((a) => a.displayName).join(', ') || '—'}</td>
                       <td className="p-3">{w.year || '—'}</td>
-                      <td className="max-w-[12rem] truncate p-3 text-xs text-muted">{w.importFileName ?? 'вручную'}</td>
-                      <td className="p-3">
-                        {w.issues.length
-                          ? <Badge tone="amber" title={w.issues.join('\n')}><Count n={w.issues.length} forms={['поле', 'поля', 'полей']} /></Badge>
-                          : <Badge tone="green">Готово</Badge>}
+                      <td className="max-w-[9rem] truncate p-3 text-xs text-muted" title={w.importFileName ?? undefined}>{w.importFileName ?? 'вручную'}</td>
+                      <td className="max-w-[16rem] space-y-1 p-3">
+                        {w.duplicateOf && <Badge tone="amber">Возможный дубль</Badge>}
+                        {w.issues.length > 0 && (
+                          <>
+                            <Badge tone="amber"><Count n={w.issues.length} forms={['замечание', 'замечания', 'замечаний']} /></Badge>
+                            <p className="text-xs text-ink-2">{issuesText(w.issues)}</p>
+                          </>
+                        )}
+                        {!w.duplicateOf && !w.issues.length && <Badge tone="green">Готово к публикации</Badge>}
                       </td>
                     </tr>
                   )
@@ -75,6 +93,7 @@ export default function Review() {
               </tbody>
             </table>
           </Card>
+          </>
         )}
     </div>
   )

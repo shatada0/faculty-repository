@@ -8,6 +8,7 @@ import { Button, Dialog, EmptyState, ErrorState, Input, Pagination, Select, Tabs
 import { ALL_FILTERS, TAB_FILTERS, TABS, type FilterKey, type Tab } from '@/lib/catalog'
 import { workTypePlural } from '@/lib/labels'
 import { plural } from '@/lib/format'
+import { useTitle } from '@/components/Layout'
 
 const PAGE_SIZE = 20
 
@@ -20,6 +21,7 @@ export default function Catalog() {
   const page = Math.max(1, Number(sp.get('page')) || 1)
   const filters = Object.fromEntries(keys.map((k) => [k, sp.getAll(k)]))
   const activeCount = keys.reduce((n, k) => n + filters[k].length, 0)
+  useTitle(q ? `«${q}» — поиск работ` : tab === 'all' ? 'Работы' : workTypePlural[tab])
 
   const base = { type: tab === 'all' ? undefined : tab, q, ...filters }
   const works = useQuery({
@@ -36,7 +38,7 @@ export default function Catalog() {
       mut(next)
       next.delete('page')
       return next
-    }, { replace })
+    }, { replace, preventScrollReset: true })
   }
   const setTab = (t: Tab) => update((p) => {
     if (t === 'all') p.delete('type'); else p.set('type', t)
@@ -121,7 +123,7 @@ export default function Catalog() {
             : works.isPending ? Array.from({ length: 5 }, (_, i) => <WorkCardSkeleton key={i} />)
             : works.data.items.length === 0 ? (
               <div className="mt-4">
-                <EmptyState action={<Button variant="outline" onClick={reset}>Сбросить фильтры</Button>}>
+                <EmptyState action={<Button variant="outline" onClick={reset}>{activeCount > 0 ? 'Сбросить фильтры' : 'Очистить поиск'}</Button>}>
                   <p className="text-xl font-bold text-ink">Ничего не найдено</p>
                   <p>Попробуйте изменить запрос или убрать часть фильтров.</p>
                 </EmptyState>
@@ -138,7 +140,6 @@ export default function Catalog() {
                 const p = new URLSearchParams(sp)
                 if (n > 1) p.set('page', String(n)); else p.delete('page')
                 setSp(p)
-                window.scrollTo({ top: 0 })
               }} />
             </div>
           )}

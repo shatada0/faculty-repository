@@ -4,6 +4,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { getDepartments, getStaff } from '@/api'
 import { EmptyState, ErrorState, Input, Select, Skeleton } from '@/components/ui'
 import { plural } from '@/lib/format'
+import { useTitle } from '@/components/Layout'
 
 /** Departments with staff and work counts, as the server counts them. */
 export const useDepartments = () => useQuery({ queryKey: ['staff', 'departments'], queryFn: getDepartments, staleTime: 5 * 60_000 })
@@ -13,8 +14,9 @@ export default function People() {
   const q = sp.get('q') ?? ''
   const department = sp.get('department') ?? ''
   const sort = sp.get('sort') ?? 'name'
-  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n }, { replace: true })
+  const set = (k: string, v: string) => setSp((p) => { const n = new URLSearchParams(p); if (v) n.set(k, v); else n.delete(k); return n }, { replace: true, preventScrollReset: true })
   const departments = useDepartments().data?.items ?? []
+  useTitle('Преподаватели')
   const [text, setText] = useState(q)
   useEffect(() => {
     if (text.trim() === q) return

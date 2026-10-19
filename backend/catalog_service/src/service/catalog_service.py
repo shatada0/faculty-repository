@@ -293,18 +293,11 @@ class CatalogService:
                 .scalars()
                 .all()
             )
+            # то же, что фасет «Кафедра» в каталоге: опубликованные работы всех типов с этой кафедрой
             stmt = (
-                select(Person.department, func.count(Work.id.distinct()))
-                .join(WorkPerson, WorkPerson.person_id == Person.id)
-                .join(Work, Work.id == WorkPerson.work_id)
-                .where(
-                    Person.kind == "staff",
-                    Person.merged_into.is_(None),
-                    WorkPerson.role.in_(AUTHOR_ROLES),
-                    Work.type.in_(("publication", "talk")),
-                    published(),
-                )
-                .group_by(Person.department)
+                select(Work.department, func.count())
+                .where(published(), Work.department.is_not(None))
+                .group_by(Work.department)
             )
             work_counts = dict((await uow.session.execute(stmt)).all())
         by_dept: dict[str, list[Person]] = defaultdict(list)

@@ -16,6 +16,7 @@ from import_service.src.service.import_service import ImportService
 from shared.auth.session import require_moderator
 from shared.bus.consumer import Delivery
 from shared.bus.contracts import ItemExtractedDTO
+from shared.exceptions import BadRequestError
 from shared.imports import Import, ImportItem
 from shared.repository.people_repository import PersonRepository
 from shared.repository.works_repository import WorkRepository
@@ -131,8 +132,8 @@ async def test_table_import(demo: dict) -> None:
 
 
 async def test_archive_item_from_worker(demo: dict) -> None:
-    storage = FakeStorage()
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, FakePublisher())
+    storage, publisher = FakeStorage(), FakePublisher()
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, publisher)
     imp = Import(
         id=uuid.uuid7(), kind="archive", work_type="vkr", file_name="a.zip", status="processing", created_by="Модератор"
     )
@@ -183,6 +184,31 @@ async def test_archive_item_from_worker(demo: dict) -> None:
     draft = await works().get(uuid.UUID(detail["items"][2]["workId"]))
     assert draft["status"] == "draft" and draft["type"] == "coursework" and draft["kind"] == "project"
     assert draft["issues"] == ["ИИ не уверен: Авторы", "Не распознан автор: Сидоров С. С."]
+
+    # «Повторить»: файл с ошибкой снова уходит воркеру
+    detail = await service.retry(imp.id)
+    assert detail["import"]["status"] == "processing" and detail["items"][1]["status"] == "pending"
+    assert [dto.item_id for _, dto in publisher.published] == [items[1].id]
+    with pytest.raises(BadRequestError):
+        await service.retry(imp.id)  # ошибок больше нет
+
+
+async def test_unknown_department_leaves_no_ai_badge(demo: dict) -> None:
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
+    imp = Import(
+        id=uuid.uuid7(), kind="archive", work_type="vkr", file_name="b.zip", status="processing", created_by="Модератор"
+    )
+    item = ImportItem(id=uuid.uuid7(), import_id=imp.id, n=1, ref="1.pdf", file_key=f"imports/{imp.id}/items/1.pdf")
+    service.storage.objects[item.file_key] = b"%PDF-1.4"
+    async with uow_write_factory() as uow:
+        uow.session.add(imp)
+        await uow.session.flush()
+        uow.session.add(item)
+    fields = {"title": "ВКР без кафедры", "department": "Кафедра, которой нет", "year": 2026}
+    meta = {k: {"source": "ai", "confidence": 0.85} for k in fields}
+    await service.on_extracted(ItemExtractedDTO(item_id=item.id, fields=fields, field_meta=meta), DELIVERY)
+    work = await works().get(uuid.UUID((await service.get(imp.id, None))["items"][0]["workId"]))
+    assert work["department"] is None and "department" not in work["fieldMeta"]  # не «ИИ, 85%» у пустого поля
 
 
 def test_routes_need_role() -> None:

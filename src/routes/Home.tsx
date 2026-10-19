@@ -8,6 +8,7 @@ import { SearchBox } from '@/components/SearchBox'
 import { Button, ErrorState, SectionTitle, Skeleton, Tiles, btn } from '@/components/ui'
 import { formatShortDate, plural } from '@/lib/format'
 import { useDepartments } from './People'
+import { useTitle } from '@/components/Layout'
 
 const TYPES: WorkType[] = ['vkr', 'coursework', 'publication', 'talk']
 const TILE_LABEL: Record<WorkType, [string, string, string]> = {
@@ -24,6 +25,7 @@ export default function Home() {
   const stats = useQuery({ queryKey: ['stats'], queryFn: getStats })
   const latest = useQuery({ queryKey: ['works', 'latest'], queryFn: getLatestWorks })
   const departments = useDepartments()
+  useTitle(null)
 
   return (
     <div className="-mt-6 space-y-10">

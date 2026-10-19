@@ -1,10 +1,10 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, getImport } from '@/api'
+import { ApiError, getImport, retryImport } from '@/api'
 import type { ImportItemStatus } from '@/api/types'
-import { NotFound } from '@/components/Layout'
-import { Badge, Card, ErrorState, Select, Spinner, Tiles, btn, type Tone } from '@/components/ui'
+import { NotFound, useTitle } from '@/components/Layout'
+import { Alert, Badge, Button, Card, ErrorState, Select, Spinner, Tiles, btn, type Tone } from '@/components/ui'
 import { formatDateTime, plural } from '@/lib/format'
 import { importItemStatusLabels, workTypePlural } from '@/lib/labels'
 import { ImportStatusBadge } from './Imports'
@@ -16,6 +16,8 @@ export default function ImportDetail() {
   const [sp, setSp] = useSearchParams()
   const status = sp.get('status') ?? ''
   const qc = useQueryClient()
+  const [retrying, setRetrying] = useState(false)
+  const [retryErr, setRetryErr] = useState<string>()
   const q = useQuery({
     queryKey: ['admin-import', id, status],
     queryFn: () => getImport(id, { status }),
@@ -27,6 +29,7 @@ export default function ImportDetail() {
     refetchIntervalInBackground: true,
   })
   const done = q.data?.import.status === 'done'
+  useTitle(q.data && `Импорт ${q.data.import.fileName}`)
   useEffect(() => {
     if (done) qc.invalidateQueries({ predicate: (x) => ['admin-works', 'admin-unmatched', 'admin-imports'].includes(String(x.queryKey[0])) })
   }, [done, qc])
@@ -42,7 +45,7 @@ export default function ImportDetail() {
       <header className="space-y-2">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="break-all text-3xl font-bold">{imp.fileName}</h1>
-          <ImportStatusBadge status={imp.status} />
+          <ImportStatusBadge status={imp.status} errors={imp.stats.errors} />
         </div>
         <p className="text-sm text-ink-2">
           {workTypePlural[imp.workType]} · {imp.kind === 'archive' ? 'архив' : 'таблица'}
@@ -66,14 +69,29 @@ export default function ImportDetail() {
       )}
 
       <div className="flex flex-wrap items-center gap-2">
-        <Link to={`/admin/review?importId=${imp.id}`} className={btn('primary')}>Перейти к проверке</Link>
+        {imp.stats.filled > 0 && <Link to={`/admin/review?importId=${imp.id}`} className={btn('primary')}>Проверить черновики ({imp.stats.filled})</Link>}
         {imp.stats.unmatched > 0 && <Link to="/admin/people?unmatched=1" className={btn('outline')}>Разобрать авторов</Link>}
-        <Select aria-label="Статус элемента" value={status} onChange={(e) => setSp(e.target.value ? { status: e.target.value } : {}, { replace: true })} className="ml-auto h-10 w-auto">
+        {imp.kind === 'archive' && imp.status === 'done' && imp.stats.errors > 0 && (
+          <Button variant="outline" loading={retrying} onClick={async () => {
+            setRetrying(true)
+            setRetryErr(undefined)
+            try {
+              qc.setQueryData(['admin-import', id, status], await retryImport(id))
+              await qc.invalidateQueries({ queryKey: ['admin-import', id] })
+            } catch (e) {
+              setRetryErr(e instanceof Error ? e.message : 'Ошибка')
+            } finally {
+              setRetrying(false)
+            }
+          }}>Повторить файлы с ошибкой ({imp.stats.errors})</Button>
+        )}
+        <Select aria-label="Статус элемента" value={status} onChange={(e) => setSp(e.target.value ? { status: e.target.value } : {}, { replace: true, preventScrollReset: true })} className="ml-auto h-10 w-auto">
           <option value="">Все статусы</option>
           {(Object.keys(importItemStatusLabels) as ImportItemStatus[]).map((s) => <option key={s} value={s}>{importItemStatusLabels[s]}</option>)}
         </Select>
       </div>
 
+      {retryErr && <Alert tone="red">{retryErr}</Alert>}
       <Card className="overflow-x-auto">
         <table className="w-full min-w-[44rem] text-sm">
           <thead className="border-b-2 border-brand text-left">

@@ -80,5 +80,10 @@ async def lookup(doi: str) -> dict[str, Any]:
     if response.status_code != 200:
         logger.warning("Crossref ответил ошибкой", extra=log | {"body": response.text[:500]})
         raise UpstreamError("Crossref ответил ошибкой, попробуйте позже")
+    try:
+        message = response.json().get("message") or {}
+    except ValueError as e:  # 200 с HTML-заглушкой вместо JSON
+        logger.warning("Crossref ответил не JSON", extra=log | {"body": response.text[:500]})
+        raise UpstreamError("Crossref ответил ошибкой, попробуйте позже") from e
     logger.info("Crossref", extra=log)
-    return from_crossref(response.json().get("message") or {})
+    return from_crossref(message)

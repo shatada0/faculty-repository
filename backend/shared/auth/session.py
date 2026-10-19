@@ -38,7 +38,6 @@ def issue_token(user: SessionUser) -> str:
     claims = {
         "sub": str(user.id),
         "ver": user.token_version,
-        "name": user.name,
         "iat": now,
         "exp": now + auth_config.ttl,
     }

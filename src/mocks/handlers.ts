@@ -7,7 +7,7 @@ import { shortName } from './names'
 import { templateCsv, templates, toCsv } from './table'
 import { db, type MockPerson } from './seed'
 import {
-  adminPeople, adminWorks, advance, allAuthorRefs, applyEdit, asAuthor, canDo, catalog, createImport, departments, DoiError, facets, fillFromDoi,
+  adminPeople, adminWorks, advance, retryImport, allAuthorRefs, applyEdit, asAuthor, canDo, catalog, createImport, departments, DoiError, facets, fillFromDoi,
   fits, ImportError, isVisible, latest, match, merge, metrics, myWorks, nextInQueue, personCard, personWorks, previewTable, profile,
   publicImport, publicItem, relatedOptions, resolvePerson, searchClassifier, staffList, suggest, summary, syncRelated, template, toPublic, unmatched,
   UPLOAD_LIMITS, withChecks,
@@ -125,7 +125,7 @@ export const handlers = [
   get('/my/works', () => HttpResponse.json(myWorks(session!.personId!)), 'author'),
   post('/my/works/:id/materials', async ({ params, request }) => {
     const w = work(params.id)
-    if (!w || !asAuthor(w, session!.personId!)) return notFound('Работа не найдена')
+    if (!w || w.status === 'rejected' || !asAuthor(w, session!.personId!)) return notFound('Работа не найдена')
     if (w.type !== 'publication' && w.type !== 'talk') return err(400, 'bad_request', 'Материалы добавляются к публикациям и выступлениям')
     const form = await request.formData()
     const file = form.get('file') as File | null
@@ -136,9 +136,10 @@ export const handlers = [
   }, 'author'),
   del('/my/works/:id/materials/:mid', ({ params }) => {
     const w = work(params.id)
-    if (!w || !asAuthor(w, session!.personId!)) return notFound('Работа не найдена')
+    if (!w || w.status === 'rejected' || !asAuthor(w, session!.personId!)) return notFound('Работа не найдена')
     const m = w.materials?.find((x) => x.id === params.mid)
     if (!m) return notFound('Материал не найден')
+    if (m.uploadedBy !== session!.name) return err(403, 'forbidden', 'Удалить можно только свой материал')
     if (m.status !== 'pending') return err(409, 'bad_state', 'Удалить можно только материал на проверке')
     w.materials = w.materials!.filter((x) => x !== m)
     return new HttpResponse(null, { status: 204 })
@@ -191,6 +192,12 @@ export const handlers = [
     const status = sp(request).get('status')
     return HttpResponse.json({ import: publicImport(imp), items: imp.items.filter((i) => !status || i.status === status).map(publicItem) })
   }, true),
+  post('/admin/imports/:id/retry', ({ params }) => {
+    const imp = db.imports.find((i) => i.id === params.id)
+    if (!imp) return notFound('Импорт не найден')
+    if (!retryImport(imp)) return err(400, 'nothing_to_retry', 'Повторять нечего: файлов с ошибкой нет')
+    return HttpResponse.json({ import: publicImport(imp), items: imp.items.map(publicItem) })
+  }, true),
   get('/admin/templates/:workType/columns', ({ params }) => {
     const t = params.workType
     return isWorkType(t) ? HttpResponse.json(templates[t].map((c) => ({ name: c.name, required: !!c.required }))) : notFound()
@@ -230,10 +237,15 @@ export const handlers = [
     const skipped: string[] = []
     for (const w of ids.map(work)) {
       if (!w) continue
-      // Opening the full text of a student work still needs the student's consent: validate the result, not the current state.
-      if (withChecks(action === 'access' ? { ...w, accessLevel: accessLevel! } : w).errors.length) { skipped.push(w.title); continue }
-      if (action === 'publish') publish(w)
-      else Object.assign(w, { accessLevel, updatedAt: now() })
+      if (action === 'publish') {
+        if (w.status === 'published') continue
+        if (withChecks(w).errors.length) { skipped.push(w.title || 'Без названия'); continue }
+        publish(w)
+      } else {
+        // access changes on incomplete drafts too; only the full text of a student work needs the student's consent
+        if (accessLevel === 'full' && (w.type === 'vkr' || w.type === 'coursework') && !w.consent) { skipped.push(w.title || 'Без названия'); continue }
+        Object.assign(w, { accessLevel, updatedAt: now() })
+      }
       done++
     }
     return HttpResponse.json({ done, skipped })
@@ -260,12 +272,19 @@ export const handlers = [
     if (!w) return notFound('Работа не найдена')
     const before = { ...w }
     const body = (await request.json()) as Record<string, unknown>
+    // the form carries the updatedAt it started from: another moderator's save in between must not be overwritten
+    if (typeof body.updatedAt === 'string' && body.updatedAt !== w.updatedAt) return err(409, 'stale', 'Работу уже изменили, пока вы её редактировали: обновите страницу')
     const badDept = unknownDepartment(body.department)
     if (badDept) return badDept
-    applyEdit(w, body, before as unknown as Record<string, unknown>)
-    w.updatedAt = now()
-    syncRelated(w, before)
-    return adminJson(w)
+    const next = structuredClone(w)
+    applyEdit(next, body, before as unknown as Record<string, unknown>)
+    // a published work stays complete: otherwise editing after publish would bypass the publish check
+    const errors = next.status === 'published' ? withChecks(next).errors : []
+    if (errors.length) return err(422, 'validation', `Опубликованная работа должна оставаться полной: ${errors.map((e) => e.message).join('; ')}`)
+    next.updatedAt = now()
+    db.works[db.works.indexOf(w)] = next
+    syncRelated(next, before)
+    return adminJson(next)
   }, true),
   post('/admin/works/:id/file', async ({ params, request }) => {
     const w = work(params.id)
@@ -286,7 +305,9 @@ export const handlers = [
     const w = work(params.id)
     const m = w?.materials?.find((x) => x.id === params.mid)
     if (!w || !m) return notFound('Материал не найден')
-    m.status = ((await request.json()) as { status: MaterialStatus }).status
+    const body = (await request.json()) as { status: MaterialStatus; reason?: string }
+    m.status = body.status
+    m.rejectReason = body.status === 'rejected' ? body.reason?.trim() || null : null
     return adminJson(w)
   }, true),
   post('/admin/works/:id/publish', ({ params }) => {

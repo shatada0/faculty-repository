@@ -46,7 +46,7 @@ export function Field({ label, error, hint, className, children, extra }: {
   const errId = error ? `${id}-err` : undefined
   return (
     <div className={cn('space-y-1', className)}>
-      <div className="flex items-baseline justify-between gap-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2">
         <label htmlFor={id} className="font-bold text-ink">{label}</label>
         {extra}
       </div>
@@ -163,20 +163,23 @@ export function Dialog({ open, onClose, title, children, className, side }: { op
 
 export function Tabs<T extends string>({ items, value, onChange, className }: { items: { value: T; label: ReactNode }[]; value: T; onChange: (v: T) => void; className?: string }) {
   return (
-    <div role="tablist" className={cn('flex gap-7 overflow-x-auto overflow-y-hidden border-b border-rule [scrollbar-width:none]', className)}>
-      {items.map((it) => (
-        <button
-          key={it.value}
-          role="tab"
-          type="button"
-          aria-selected={it.value === value}
-          onClick={() => onChange(it.value)}
-          className={cn('-mb-px whitespace-nowrap border-b-[3px] py-2.5 text-ink',
-            it.value === value ? 'border-accent font-bold' : 'border-transparent hover:border-rule')}
-        >
-          {it.label}
-        </button>
-      ))}
+    // Tabs that do not fit scroll sideways; the faded right edge shows there is more. The rule stays outside the fade.
+    <div className={cn('border-b border-rule', className)}>
+      <div role="tablist" className="-mb-px flex gap-7 overflow-x-auto overflow-y-hidden pr-8 [mask-image:linear-gradient(to_right,black_calc(100%-2rem),transparent)] [scrollbar-width:none]">
+        {items.map((it) => (
+          <button
+            key={it.value}
+            role="tab"
+            type="button"
+            aria-selected={it.value === value}
+            onClick={() => onChange(it.value)}
+            className={cn('-mb-px whitespace-nowrap border-b-[3px] py-2.5 text-ink',
+              it.value === value ? 'border-accent font-bold' : 'border-transparent hover:border-rule')}
+          >
+            {it.label}
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

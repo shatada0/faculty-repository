@@ -92,6 +92,7 @@ def material_dict(m: Material, uploader: str) -> dict:
         "status": m.status,
         "uploadedBy": uploader,
         "uploadedAt": iso(m.uploaded_at),
+        "rejectReason": m.reject_reason,
     }
 
 

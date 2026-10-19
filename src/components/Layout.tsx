@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from 'react'
-import { isRouteErrorResponse, Link, Navigate, NavLink, Outlet, useLocation, useNavigate, useRouteError } from 'react-router'
+import { isRouteErrorResponse, Link, Navigate, NavLink, Outlet, ScrollRestoration, useLocation, useNavigate, useNavigation, useRouteError } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, getMe, logout, reportError } from '@/api'
 import type { User } from '@/api/types'
@@ -12,6 +12,16 @@ const STATS_URL = import.meta.env.VITE_STATS_URL as string | undefined
 
 /** Where a signed-in user works: authors upload materials, moderators and admins run the repository. */
 export const homeFor = (user: User) => (user.role === 'author' ? '/my' : '/admin')
+
+const SITE = 'Либерея'
+/** Tab title of the page: "Название — Либерея"; `null` is the site's own title. Not known yet (undefined) keeps
+ * the current one, so a page still loading does not override what its NotFound child has set. */
+export function useTitle(title?: string | null | false) {
+  useEffect(() => {
+    if (title === undefined || title === false || title === '') return
+    document.title = title ? `${title} — ${SITE}` : `${SITE} — репозиторий работ факультета`
+  }, [title])
+}
 
 export function useMe() {
   return useQuery({
@@ -33,12 +43,15 @@ function Header() {
     cn('-mb-px border-b-[3px] pb-3 pt-2 no-underline hover:text-ink', isActive ? 'border-accent font-bold' : 'border-transparent')
   async function onLogout() {
     await logout()
+    // Leave the signed-in page first (committed synchronously, not in a transition): otherwise its guard sees
+    // the signed-out user and sends them to the login form.
+    await navigate('/', { flushSync: true })
     qc.setQueryData(['me'], null)
     qc.removeQueries({ predicate: (q) => String(q.queryKey[0]).startsWith('admin') || q.queryKey[0] === 'my-works' })
-    navigate('/')
   }
   return (
     <>
+      <NavigationBar />
       <div className="bg-ink text-sm text-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-4 gap-y-1 px-4 py-1.5">
           <span>{user && user.role !== 'author' ? 'Рабочее место модератора' : ORG}</span>
@@ -70,6 +83,12 @@ function Header() {
   )
 }
 
+/** Thin bar at the top while the next page's code or data loads, so a click never looks ignored. */
+function NavigationBar() {
+  const busy = useNavigation().state !== 'idle'
+  return <div aria-hidden className={cn('fixed inset-x-0 top-0 z-50 h-0.5 origin-left bg-accent transition-transform duration-500', busy ? 'scale-x-75' : 'scale-x-0 duration-0')} />
+}
+
 const Footer = () => (
   <footer className="border-t border-ink">
     <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-4 pb-7 pt-4 text-sm text-ink-2">
@@ -85,6 +104,7 @@ export function PublicLayout() {
       <Header />
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-14 pt-6"><Outlet /></main>
       <Footer />
+      <ScrollRestoration />
     </div>
   )
 }
@@ -98,6 +118,10 @@ const adminNav = [
 ]
 
 export function AdminLayout() {
+  // A draft opened from the review queue belongs to "Проверка", not to "Все работы".
+  const { pathname, search } = useLocation()
+  const fromQueue = pathname.startsWith('/admin/works/') && new URLSearchParams(search).get('queue') === '1'
+  const active = (to: string, isActive: boolean) => (to === '/admin/review' ? isActive || fromQueue : to === '/admin/works' ? isActive && !fromQueue : isActive)
   const link = ({ isActive }: { isActive: boolean }) => cn(
     'flex min-h-11 items-center whitespace-nowrap border-b border-rule px-3 no-underline hover:text-ink md:px-2',
     isActive ? 'bg-panel font-bold' : '',
@@ -107,12 +131,13 @@ export function AdminLayout() {
       <Header />
       <div className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 md:flex-row md:gap-10">
         <nav className="flex shrink-0 overflow-x-auto border-t-2 border-brand [scrollbar-width:none] md:w-48 md:flex-col" aria-label="Рабочее место">
-          {adminNav.map(({ to, label, end }) => <NavLink key={to} to={to} end={end} className={link}>{label}</NavLink>)}
-          {STATS_URL && <a href={STATS_URL} target="_blank" rel="noreferrer" className={link({ isActive: false })}>Статистика</a>}
+          {adminNav.map(({ to, label, end }) => <NavLink key={to} to={to} end={end} className={({ isActive }) => link({ isActive: active(to, isActive) })}>{label}</NavLink>)}
+          {STATS_URL && <a href={STATS_URL} target="_blank" rel="noreferrer" className={link({ isActive: false })}>Статистика ↗</a>}
         </nav>
         <main className="min-w-0 flex-1"><Suspense fallback={<Spinner />}><Outlet /></Suspense></main>
       </div>
       <Footer />
+      <ScrollRestoration />
     </div>
   )
 }
@@ -144,8 +169,9 @@ export function RouteError() {
   )
 }
 
-export const NotFound = ({ text = 'Страница не найдена' }: { text?: string }) => (
-  <EmptyState action={<Link to="/works" className={btn('outline')}>Перейти в каталог</Link>}>
+export const NotFound = ({ text = 'Страница не найдена' }: { text?: string }) => {
+  useTitle(text)
+  return <EmptyState action={<Link to="/works" className={btn('outline')}>Перейти в каталог</Link>}>
     <p className="text-2xl font-bold text-ink">{text}</p>
   </EmptyState>
-)
+}

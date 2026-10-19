@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, getAdminPerson, mergePerson, patchPerson } from '@/api'
 import type { AdminPersonCard, Person, PersonKind } from '@/api/types'
 import { PersonPicker } from '@/components/AuthorsEditor'
-import { NotFound } from '@/components/Layout'
+import { NotFound, useTitle } from '@/components/Layout'
 import { StatusBadge, TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Textarea } from '@/components/ui'
 import { personKindLabels } from '@/lib/labels'
@@ -72,6 +72,7 @@ export default function PersonAdmin() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const q = useQuery({ queryKey: ['admin-person', id], queryFn: () => getAdminPerson(id) })
+  useTitle(q.data?.fullName)
   const [dup, setDup] = useState<Person | null>(null)
   const [merging, setMerging] = useState(false)
   const [picking, setPicking] = useState(false)
@@ -108,7 +109,7 @@ export default function PersonAdmin() {
         {p.kind === 'staff' && <Link to={`/people/${p.id}`} className="inline-flex items-center gap-1 text-sm text-ink hover:underline">Публичный профиль</Link>}
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1fr_22rem]">
+      <div className="grid gap-5 xl:grid-cols-[1fr_22rem]">
         <Card className="p-4"><PersonForm key={JSON.stringify(p)} person={p} /></Card>
 
         <div className="space-y-5">

@@ -1,8 +1,8 @@
 """Начальные данные.
 
-python -m admin_service.seed people staff.csv — сотрудники и кафедры: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID».
+python -m admin_service.src.seed people staff.csv — сотрудники и кафедры: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID».
     Повторный запуск не создаёт дублей: человек ищется по exact_key.
-python -m admin_service.seed demo — демо-данные, перенос src/mocks/seed.ts с тем же генератором: фронт проверяется
+python -m admin_service.src.seed demo — демо-данные, перенос src/mocks/seed.ts с тем же генератором: фронт проверяется
     на настоящем бэке с теми же данными. Отказывается работать, если в базе уже есть работы, — прод не затрёт.
 """
 
@@ -892,8 +892,8 @@ async def load_demo() -> None:
     data, ids = await write_demo()
     logger.info("Демо-данные загружены", extra={"people": len(data["people"]), "works": len(data["works"])})
     print(f"Готово: {len(data['people'])} человек, {len(data['works'])} работ. Входы, как в моках:")
-    print("  python -m auth_service.users add moderator --name Модератор --role moderator")
-    print(f"  python -m auth_service.users add orlov --name 'Орлов Д. С.' --role author --person {ids['p-s1']}")
+    print("  python -m auth_service.src.users add moderator --name Модератор --role moderator")
+    print(f"  python -m auth_service.src.users add orlov --name 'Орлов Д. С.' --role author --person {ids['p-s1']}")
 
 
 async def write_demo() -> tuple[dict[str, list[dict]], dict[str, uuid.UUID]]:
@@ -906,7 +906,7 @@ async def write_demo() -> tuple[dict[str, list[dict]], dict[str, uuid.UUID]]:
         if await uow.session.scalar(select(func.count()).select_from(Work)):
             sys.exit("В базе уже есть работы — демо-данные не загружаются")
         if not await uow.session.scalar(select(func.count()).select_from(Classifier)):
-            sys.exit("Справочники пусты: сначала python -m admin_service.refdata init")
+            sys.exit("Справочники пусты: сначала python -m admin_service.src.refdata init")
         for d in D.DEPTS:
             uow.session.add(Department(name=d.name))
         await uow.session.flush()
@@ -1036,7 +1036,7 @@ async def load_people(path: Path) -> None:
 
 def main() -> None:
     setup_logging()
-    parser = argparse.ArgumentParser(prog="python -m admin_service.seed")
+    parser = argparse.ArgumentParser(prog="python -m admin_service.src.seed")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("demo")
     sub.add_parser("people").add_argument("file", type=Path)

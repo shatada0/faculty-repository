@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ApiError, getMaterialLink, getWork, getWorkFile, getWorks } from '@/api'
 import type { DetailRow, FileLink, PublicWork, StudentWork } from '@/api/types'
 import { Citation, useCopy } from '@/components/CitationButton'
-import { NotFound } from '@/components/Layout'
+import { NotFound, useTitle } from '@/components/Layout'
 import { Authors, ViewText, WorkCard } from '@/components/WorkCard'
 import { Alert, Button, ErrorState, SectionTitle, Skeleton, btn } from '@/components/ui'
 import { workTypePlural } from '@/lib/labels'
@@ -12,7 +12,7 @@ import { openSigned } from '@/lib/open'
 
 const Row = ({ row }: { row: DetailRow }) => (
   <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 border-b border-rule py-2.5">
-    <dt className="text-muted">{row.label}</dt><dd>{row.people ? <Authors people={row.people} /> : <ViewText item={row} />}</dd>
+    <dt className="text-muted">{row.label}</dt><dd className="[overflow-wrap:anywhere]">{row.people ? <Authors people={row.people} /> : <ViewText item={row} />}</dd>
   </div>
 )
 
@@ -49,7 +49,8 @@ function SupervisorOther({ w }: { w: StudentWork & PublicWork }) {
 export default function WorkPage() {
   const { id = '' } = useParams()
   const q = useQuery({ queryKey: ['work', id], queryFn: () => getWork(id) })
-  const { copied, copy } = useCopy()
+  useTitle(q.data?.title)
+  const { copied, failed, copy } = useCopy()
   const [fileErr, setFileErr] = useState<string>()
   const [opening, setOpening] = useState(false)
 
@@ -87,7 +88,7 @@ export default function WorkPage() {
           {v.fileButton && <Button onClick={() => open(() => getWorkFile(w.id))} loading={opening}>{v.fileButton}</Button>}
           <a href="#cite" className={btn(v.fileButton ? 'outline' : 'primary')}>Цитировать</a>
           {v.external && <a href={v.external.href} target="_blank" rel="noreferrer" className={btn('outline')}>{v.external.label}</a>}
-          <Button variant="outline" onClick={() => copy(window.location.href)}>{copied ? 'Ссылка скопирована' : 'Скопировать ссылку'}</Button>
+          <Button variant="outline" onClick={() => copy(window.location.href.split('#')[0])}>{copied ? 'Ссылка скопирована' : failed ? 'Не удалось скопировать' : 'Скопировать ссылку'}</Button>
           {v.closedNote && <span className="text-[15px] text-ink-2">{v.closedNote}</span>}
         </div>
         {fileErr && <Alert tone="red">{fileErr}</Alert>}

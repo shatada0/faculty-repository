@@ -3,16 +3,10 @@ import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { ApiError, getPerson, getPersonMetrics, getPersonWorks } from '@/api'
-import type { PublicWork } from '@/api/types'
-import { NotFound } from '@/components/Layout'
+import { NotFound, useTitle } from '@/components/Layout'
 import { WorkCard, WorkCardSkeleton } from '@/components/WorkCard'
 import { EmptyState, ErrorState, SectionTitle, Select, Skeleton, Tabs, Tiles } from '@/components/ui'
-
-function groupByYear(items: PublicWork[]) {
-  const m = new Map<number, PublicWork[]>()
-  for (const w of items) m.set(w.year, [...(m.get(w.year) ?? []), w])
-  return [...m].sort((a, b) => b[0] - a[0])
-}
+import { groupByYear } from '@/lib/group'
 
 /** Page of a teacher, student or graduate. Tiles, tabs and their filters come from the server. */
 export default function Person() {
@@ -23,9 +17,10 @@ export default function Person() {
     const n = reset ? new URLSearchParams() : new URLSearchParams(p)
     for (const [k, v] of Object.entries(patch)) if (v) n.set(k, v); else n.delete(k)
     return n
-  }, { replace: true })
+  }, { replace: true, preventScrollReset: true })
 
   const person = useQuery({ queryKey: ['person', id], queryFn: () => getPerson(id) })
+  useTitle(person.data?.fullName)
   // Merged profiles answer with the surviving profile: move the URL there.
   useEffect(() => {
     if (person.data && person.data.id !== id) navigate(`/people/${person.data.id}${window.location.search}`, { replace: true })
@@ -150,7 +145,7 @@ export default function Person() {
 
         {p.coauthors.length > 0 && (
           <aside className="min-w-0 flex-[1_1_16rem]">
-            <SectionTitle>Чаще всего пишет с</SectionTitle>
+            <SectionTitle>Частые соавторы</SectionTitle>
             <ul>
               {p.coauthors.map((c) => (
                 <li key={c.id} className="flex min-h-11 items-center justify-between gap-3 border-b border-rule">

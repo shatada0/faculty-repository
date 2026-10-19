@@ -11,7 +11,7 @@ from starlette.datastructures import Headers
 from starlette.requests import HTTPConnection
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from shared.auth.session import read_token
+from shared.auth.session import _key, read_token
 from shared.config import auth_config
 from shared.context import MessageContext, get_context, use_context
 from shared.exceptions import error_response, setup_exception_handlers
@@ -90,6 +90,8 @@ def create_app(
 ) -> FastAPI:
     """FastAPI с общими обработчиками. middlewares — снаружи внутрь, после RequestContextMiddleware."""
     setup_logging()
+    if AuthMiddleware in middlewares:
+        _key("jwt_public")  # нет ключа — сервис не стартует, а не отвечает 500 на первый запрос с кукой
     app = FastAPI(title=title, lifespan=lifespan, docs_url="/docs", openapi_url="/openapi.json", redoc_url=None)
     for router in routers:
         app.include_router(router)

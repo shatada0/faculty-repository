@@ -115,7 +115,8 @@ def setup_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def http(_: Request, exc: HTTPException) -> JSONResponse:
-        if exc.status_code >= 400:
+        # 401 — каждый аноним на /auth/me; статус и так в access-логе, а warning топил бы настоящие отказы
+        if exc.status_code >= 400 and exc.status_code != 401:
             logger.warning(str(exc.detail), extra={"status": exc.status_code})
         message = exc.detail if isinstance(exc.detail, str) else "Ошибка запроса"
         if exc.status_code == 404 and message == "Not Found":

@@ -9,7 +9,7 @@ from sqlalchemy import ColumnElement, select
 
 from admin_service.src.service.works_service import check_upload
 from shared.auth.session import SessionUser
-from shared.exceptions import BadRequestError, ConflictError, NotFoundError
+from shared.exceptions import BadRequestError, ConflictError, ForbiddenError, NotFoundError
 from shared.logging import get_logger
 from shared.repository.works_repository import with_uploaders
 from shared.storage import Storage
@@ -36,7 +36,8 @@ class AuthorService:
     storage: Storage
 
     async def _work(self, uow: UnitOfWork, work_id: UUID, user: SessionUser) -> Work:
-        stmt = select(Work).where(Work.id == work_id, mine(user.person_id))
+        """Как в списке: отклонённой работы автор не видит, загрузить к ней тоже не может."""
+        stmt = select(Work).where(Work.id == work_id, mine(user.person_id), Work.status != "rejected")
         w = (await uow.session.execute(stmt)).scalar_one_or_none()
         if w is None:
             raise NotFoundError("Работа не найдена")
@@ -101,6 +102,8 @@ class AuthorService:
             m = await uow.session.get(Material, material_id)
             if m is None or m.work_id != work_id:
                 raise NotFoundError("Материал не найден")
+            if m.uploaded_by != user.id:  # соавтор видит материал, но удалить его не может
+                raise ForbiddenError("Удалить можно только свой материал")
             if m.status != "pending":
                 raise ConflictError("Удалить можно только материал на проверке", code="bad_state")
             await uow.session.delete(m)

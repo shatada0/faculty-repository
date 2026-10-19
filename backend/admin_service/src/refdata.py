@@ -1,7 +1,7 @@
 """Справочники: журналы, классификаторы, направления подготовки.
 
-python -m admin_service.refdata load journals|classifiers|directions <файл.csv>
-python -m admin_service.refdata init — заполняет пустые справочники из fixtures/ (сервис migrations после alembic upgrade)
+python -m admin_service.src.refdata load journals|classifiers|directions <файл.csv>
+python -m admin_service.src.refdata init — заполняет пустые справочники из fixtures/ (сервис migrations после alembic upgrade)
 
 Upsert в одной транзакции; строки не удаляются, поэтому коды, на которые ссылаются работы, остаются.
 Форматы csv (разделитель «;», первая строка — заголовок):
@@ -81,7 +81,7 @@ async def init() -> None:
 
 def main() -> None:
     setup_logging()
-    parser = argparse.ArgumentParser(prog="python -m admin_service.refdata")
+    parser = argparse.ArgumentParser(prog="python -m admin_service.src.refdata")
     sub = parser.add_subparsers(dest="command", required=True)
     cmd = sub.add_parser("load")
     cmd.add_argument("kind", choices=list(TABLES))

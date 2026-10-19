@@ -22,13 +22,13 @@ def _fail(message: str) -> PydanticCustomError:
     return PydanticCustomError("check", message)
 
 
-def _blank(v: Any) -> bool:
+def blank(v: Any) -> bool:
     return v is None or (isinstance(v, str) and not v.strip())
 
 
 def need(message: str) -> AfterValidator:
     def check(v: Any) -> Any:
-        if _blank(v):
+        if blank(v):
             raise _fail(message)
         return v
 
@@ -113,14 +113,14 @@ class Publication(Common):
     @field_validator("venue")
     @classmethod
     def venue_needed(cls, v: str | None, info: ValidationInfo) -> str | None:
-        if info.data.get("kind") not in ("monograph", "textbook") and _blank(v):
+        if info.data.get("kind") not in ("monograph", "textbook") and blank(v):
             raise _fail("Укажите журнал или сборник")
         return v
 
     @field_validator("publisher")
     @classmethod
     def publisher_needed(cls, v: str | None, info: ValidationInfo) -> str | None:
-        if info.data.get("kind") in ("monograph", "textbook") and _blank(v):
+        if info.data.get("kind") in ("monograph", "textbook") and blank(v):
             raise _fail("Укажите издательство")
         return v
 
@@ -176,6 +176,15 @@ def unmatched_names(data: dict[str, Any]) -> list[str]:
     return list(dict.fromkeys(a["displayName"] for a in refs if not a.get("personId") and a.get("displayName")))
 
 
+def _empty(v: Any) -> bool:
+    return v is None or v == "" or v == [] or (isinstance(v, dict) and all(_empty(x) for x in v.values()))
+
+
+def live_meta(data: dict[str, Any], field_meta: dict) -> dict:
+    """Источник только у заполненного поля: кафедру не из справочника импорт стирает, а «ИИ, 85%» оставалось бы."""
+    return {k: m for k, m in field_meta.items() if not (k in data and _empty(data[k]))}
+
+
 def issues(data: dict[str, Any], errs: list[dict], field_meta: dict) -> list[str]:
     return [
         *(e["message"] for e in errs),
@@ -187,7 +196,8 @@ def issues(data: dict[str, Any], errs: list[dict], field_meta: dict) -> list[str
 def admin_dict(w: Work, journal_lists: list[str] | None = None) -> dict[str, Any]:
     """AdminWork: все поля (None — пусто) плюс то, что сервер считает при каждом ответе; при записи игнорируется."""
     data = work_dict(w, journal_lists)
-    field_meta = {k: m | {"lowConfidence": True} if unsure(m) else m for k, m in w.field_meta.items()}
+    meta = live_meta(data, w.field_meta)
+    field_meta = {k: m | {"lowConfidence": True} if unsure(m) else m for k, m in meta.items()}
     errs = errors(data)
     return data | {
         "status": w.status,
@@ -200,7 +210,7 @@ def admin_dict(w: Work, journal_lists: list[str] | None = None) -> dict[str, Any
         "updatedAt": w.updated_at.isoformat(),
         "importFileName": w.import_.file_name if w.import_ else None,
         "errors": errs,
-        "issues": issues(data, errs, w.field_meta),
+        "issues": issues(data, errs, meta),
         "actions": ACTIONS[w.status],
         "materials": [material_dict(m, m.uploader.name if m.uploader else "") for m in w.materials],
     }
@@ -210,4 +220,4 @@ def check_work(w: Work, **overrides: Any) -> tuple[list[dict], list[str]]:
     """errors и issues без загрузки материалов и импорта: для очереди, сводки и bulk."""
     data = work_dict(w) | overrides
     errs = errors(data)
-    return errs, issues(data, errs, w.field_meta)
+    return errs, issues(data, errs, live_meta(data, w.field_meta))

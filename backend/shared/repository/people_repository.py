@@ -1,5 +1,6 @@
 """Люди: сопоставление авторов по ключам из person_names и поиск по началам слов."""
 
+from collections import defaultdict
 from collections.abc import Iterable
 from uuid import UUID
 
@@ -72,31 +73,41 @@ class PersonRepository:
 
     async def match_exact(self, uow: UnitOfWork, display_name: str) -> Person | None:
         """Точное совпадение с полным ФИО или известным вариантом; двое с одним ключом — не угадываем."""
-        stmt = (
-            select(PersonName.person_id)
-            .join(Person, Person.id == PersonName.person_id)
-            # «Р. И. Степанов» ищется и как «Степанов Р. И.»: ключ учитывает порядок, а смысл тот же
-            .where(
-                PersonName.exact_key.in_({exact_key(display_name), exact_key(surname_first(display_name))}),
-                Person.merged_into.is_(None),
-            )
-            .distinct()
-            .limit(2)
-        )
-        ids = (await uow.session.execute(stmt)).scalars().all()
-        return await uow.session.get(Person, ids[0]) if len(ids) == 1 else None
+        return (await self.match_many(uow, [display_name])).get(display_name)
 
-    async def suggestions(self, uow: UnitOfWork, display_name: str, limit: int = 5) -> list[Person]:
-        stmt = (
-            select(Person)
-            .where(
-                Person.merged_into.is_(None),
-                Person.id.in_(select(PersonName.person_id).where(PersonName.short_key == short_key(display_name))),
-            )
-            .order_by(Person.full_name)
-            .limit(limit)
+    async def match_many(self, uow: UnitOfWork, names: Iterable[str]) -> dict[str, Person]:
+        """match_exact для многих написаний одним запросом: страница нераспознанных не делает запрос на имя."""
+        # «Р. И. Степанов» ищется и как «Степанов Р. И.»: ключ учитывает порядок, а смысл тот же
+        keys = {n: {exact_key(n), exact_key(surname_first(n))} for n in names}
+        if not keys:
+            return {}
+        rows = await uow.session.execute(
+            select(PersonName.exact_key, PersonName.person_id)
+            .join(Person, Person.id == PersonName.person_id)
+            .where(PersonName.exact_key.in_(set().union(*keys.values())), Person.merged_into.is_(None))
         )
-        return list((await uow.session.execute(stmt)).scalars())
+        by_key: dict[str, set[UUID]] = defaultdict(set)
+        for key, person_id in rows:
+            by_key[key].add(person_id)
+        found = {n: ids.pop() for n, ks in keys.items() if len(ids := set().union(*(by_key[k] for k in ks))) == 1}
+        people = await self.by_ids(uow, found.values())
+        return {n: people[i] for n, i in found.items()}
+
+    async def suggestions(self, uow: UnitOfWork, names: Iterable[str], limit: int = 5) -> dict[str, list[Person]]:
+        """Кандидаты по ключу «фамилия:инициал» для каждого написания, одним запросом."""
+        keys = {n: short_key(n) for n in names}
+        if not keys:
+            return {}
+        rows = await uow.session.execute(
+            select(PersonName.short_key, Person)
+            .join(Person, Person.id == PersonName.person_id)
+            .where(PersonName.short_key.in_(set(keys.values())), Person.merged_into.is_(None))
+            .order_by(Person.full_name, Person.id)
+        )
+        by_key: dict[str, dict[UUID, Person]] = defaultdict(dict)
+        for key, person in rows:
+            by_key[key].setdefault(person.id, person)  # у человека бывает несколько вариантов с одним ключом
+        return {n: list(by_key[k].values())[:limit] for n, k in keys.items()}
 
     def add(self, uow: UnitOfWork, person: Person) -> None:
         uow.session.add(person)

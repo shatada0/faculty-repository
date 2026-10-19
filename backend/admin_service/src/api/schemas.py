@@ -14,6 +14,7 @@ class BulkRequest(BaseModel):
 
 class MaterialDecision(BaseModel):
     status: Literal["approved", "rejected"]
+    reason: str = Field("", max_length=2000)  # автору видно, почему отклонили
 
 
 class RejectRequest(BaseModel):

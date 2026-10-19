@@ -5,7 +5,8 @@ import type { WorkType } from '@/api/types'
 import { ErrorState, SectionTitle, Skeleton, Tiles, btn } from '@/components/ui'
 import { formatDateTime, plural } from '@/lib/format'
 import { workTypePlural } from '@/lib/labels'
-import { ImportStatusBadge } from './Imports'
+import { ImportResult, ImportStatusBadge } from './Imports'
+import { useTitle } from '@/components/Layout'
 
 const DRAFT_LABELS: Record<WorkType, string> = { vkr: 'ВКР', coursework: 'курсовые', publication: 'публикации', talk: 'выступления' }
 
@@ -13,6 +14,7 @@ export default function Dashboard() {
   const summary = useQuery({ queryKey: ['admin-works', 'summary'], queryFn: getAdminSummary })
   const imports = useQuery({ queryKey: ['admin-imports'], queryFn: getImports })
   const unmatched = useQuery({ queryKey: ['admin-unmatched'], queryFn: getUnmatched })
+  useTitle('Сводка')
 
   return (
     <div className="space-y-10">
@@ -43,9 +45,9 @@ export default function Dashboard() {
               <div key={i.id} className="flex items-baseline gap-3 border-b border-rule py-3">
                 <div className="min-w-0 flex-1">
                   <Link to={`/admin/imports/${i.id}`} className="block truncate font-bold">{i.fileName}</Link>
-                  <p className="text-sm text-muted">{workTypePlural[i.workType]} · {formatDateTime(i.createdAt)} · ошибок {i.stats.errors} из {i.stats.total}</p>
+                  <p className="text-sm text-muted">{workTypePlural[i.workType]} · {formatDateTime(i.createdAt)} · <ImportResult stats={i.stats} /></p>
                 </div>
-                <ImportStatusBadge status={i.status} />
+                <ImportStatusBadge status={i.status} errors={i.stats.errors} />
               </div>
             ))}
         </section>

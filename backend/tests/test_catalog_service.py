@@ -156,6 +156,11 @@ async def test_home_and_people(demo: dict) -> None:
     talk = (await c.catalog({}, q=None, type_="talk", exclude=None, sort=None, page=1, page_size=1))["items"][0]
     assert talk["view"]["kind"].startswith("Доклад (") and talk["view"]["byline"][0]["label"] == "Докладчики:"
     assert (await c.citation(uuid.UUID(talk["id"])))["gost"]
+    # у кафедры на главной столько же работ, сколько в фасете «Кафедра» каталога
+    facet = {f["value"]: f["count"] for f in (await c.facets({}, q=None, type_=None))["department"]}
+    assert [d["workCount"] for d in (await c.departments())["items"]] == [
+        facet.get(d["name"], 0) for d in (await c.departments())["items"]
+    ]
 
 
 async def test_live_search_prefix_and_typos(demo: dict) -> None:

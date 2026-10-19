@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Navigate, useNavigate, useSearchParams } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, login } from '@/api'
-import { homeFor, useMe } from '@/components/Layout'
+import { homeFor, useMe, useTitle } from '@/components/Layout'
 import { Alert, Button, Card, Field, Input } from '@/components/ui'
 import { safeNext } from '@/lib/url'
 
@@ -12,6 +12,7 @@ export default function Login() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const me = useMe()
+  useTitle('Вход')
   const [form, setForm] = useState({ login: '', password: '' })
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)

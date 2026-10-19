@@ -152,6 +152,37 @@ class ImportService:
             items = (await uow.session.execute(stmt)).scalars().all()
         return {"import": import_dict(imp, stats._asdict()), "items": [item_dict(it) for it in items]}
 
+    async def retry(self, import_id: UUID) -> dict:
+        """Файлы с ошибкой — снова воркеру: ИИ был недоступен, оборвалась сеть. Битый PDF просто упадёт ещё раз."""
+        async with self.uow_factory() as uow:
+            imp = await uow.session.get(Import, import_id, with_for_update=True)
+            if imp is None:
+                raise NotFoundError("Импорт не найден")
+            items = (
+                (
+                    await uow.session.execute(
+                        select(ImportItem).where(
+                            ImportItem.import_id == import_id,
+                            ImportItem.status == "error",
+                            ImportItem.file_key.is_not(None),
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            if not items:
+                raise BadRequestError("Повторять нечего: файлов с ошибкой нет", code="nothing_to_retry")
+            for it in items:
+                it.status, it.error = "pending", None
+            imp.status = "processing"
+        for it in items:  # после коммита, как при загрузке
+            await self.publisher.publish(
+                ImportTopic.ITEM_CREATED, ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=imp.work_type)
+            )
+        logger.info("Повтор импорта", extra={"import_id": str(import_id), "files": len(items)})
+        return await self.get(import_id, None)
+
     async def preview(self, work_type: str, file: UploadFile) -> dict:
         """Заголовки, первые 10 строк с незаполненными обязательными полями, сколько строк и сколько плохих."""
         rows = await _table(file)
@@ -188,6 +219,7 @@ class ImportService:
             import_id=imp.id,
             details={},
             keywords=[],
+            people=[],  # ИИ не нашёл ни одного ФИО — без этого w.people ниже пошёл бы лениво в базу и упал
             field_meta=meta,
             **{"id": uuid.uuid7(), **extra},
         )

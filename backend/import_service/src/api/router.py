@@ -45,6 +45,11 @@ async def import_detail(
     return await service.get(import_id, status)
 
 
+@router.post("/imports/{import_id:uuid}/retry")
+async def retry_import(service: Service, import_id: UUID) -> dict:
+    return await service.retry(import_id)
+
+
 @router.get("/templates/{work_type}/columns")
 async def template_columns(work_type: str) -> list[dict]:
     if work_type not in TEMPLATES:

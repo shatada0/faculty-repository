@@ -12,7 +12,8 @@ post {
 
 body:json {
   {
-    "status": "rejected"
+    "status": "rejected",
+    "reason": "Не тот файл"
   }
 }
 
@@ -23,5 +24,8 @@ assert {
 tests {
   test("статус материала", function () {
     expect(res.body.materials.find(m => m.id === bru.getVar("myMaterialId")).status).to.equal("rejected");
+  });
+  test("причина видна", function () {
+    expect(res.body.materials.find(m => m.id === bru.getVar("myMaterialId")).rejectReason).to.equal("Не тот файл");
   });
 }
