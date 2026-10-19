@@ -12,6 +12,7 @@ from shared.exceptions import NotFoundError
 from shared.repository.people_repository import PersonRepository
 from shared.repository.works_repository import WorkRepository
 from shared.uow import uow_ro_factory, uow_write_factory
+from shared.works.schemas import issn_key
 from tests.fakes import FakeStorage
 
 PUB = {
@@ -195,3 +196,58 @@ async def test_suggest_works_and_people(demo: dict) -> None:
     for w in hidden[:5]:
         found = [x["id"] for x in (await c.suggest(w["title"]))["works"]]
         assert str(demo["ids"][w["id"]]) not in found
+
+
+async def test_short_queries_do_not_match_everything(demo: dict) -> None:
+    c = catalog()
+
+    async def total(q: str) -> int:
+        return (await c.catalog({}, q=q, type_=None, exclude=None, sort=None, page=1, page_size=1))["total"]
+
+    everything = await total("")
+    for q in ("в", "по", "о"):  # стоп-слова: полнотекстового запроса нет, триграммы одной-двух букв не подмешиваются
+        assert await total(q) == 0, q
+    assert await total("ИИ") < everything / 10  # стемминг даёт 'и', но префиксом 'и':* он не становится
+    assert (await c.suggest("в"))["works"] == []
+    assert await total("нейр") > 0  # длинные лексемы — по-прежнему префиксы
+
+
+async def test_staff_query_without_letters_finds_nobody(demo: dict) -> None:
+    c = catalog()
+    assert (await c.staff(q="!!!", departments=[], sort=None))["items"] == []
+    assert (await c.staff(q=None, departments=[], sort=None))["items"]
+
+
+async def test_journal_lists_card_and_facet_agree(demo: dict) -> None:
+    c = catalog()
+    pubs = await c.catalog({}, q=None, type_="publication", exclude=None, sort=None, page=1, page_size=100)
+    on_cards = sum("Белый список, уровень 1" in w.get("journalLists", []) for w in pubs["items"])
+    facet = {f["value"]: f["count"] for f in (await c.facets({}, q=None, type_="publication"))["journalList"]}
+    assert pubs["total"] <= 100 and on_cards == facet.get("white1", 0) > 0
+
+
+async def test_file_only_for_open_text(demo: dict) -> None:
+    c = catalog()
+    items = (await c.catalog({}, q=None, type_=None, exclude=None, sort=None, page=1, page_size=100))["items"]
+    closed = next(w for w in items if w["accessLevel"] == "card_only")
+    with pytest.raises(NotFoundError):
+        await c.file(uuid.UUID(closed["id"]))
+    opened = next(w for w in items if w["accessLevel"] == "full" and w["hasFile"])
+    assert (await c.file(uuid.UUID(opened["id"])))["url"]
+
+
+def test_issn_normalized() -> None:
+    assert issn_key("ISSN 1234-567x") == issn_key("1234567X") == issn_key(" 1234-567X ") == "1234-567X"
+    assert issn_key("не ISSN") == "не ISSN" and issn_key(None) is None
+
+
+async def test_client_errors_reject_foreign_origin() -> None:
+    import httpx
+
+    from catalog_service.src.main import app
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        r = await client.post("/api/client-errors", json={"message": "x"}, headers={"Origin": "https://evil.example"})
+        assert r.status_code == 403
+        r = await client.post("/api/client-errors", json={"message": "x"}, headers={"Origin": "https://localhost"})
+        assert r.status_code == 204

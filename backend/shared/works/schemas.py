@@ -252,6 +252,18 @@ def _url(value: Any) -> str | None:
         raise PydanticCustomError("url", "Ссылка должна начинаться с http:// или https://") from None
 
 
+_ISSN = re.compile(r"(?:ISSN\s*)?(\d{4})-?(\d{3}[\dX])")
+
+
+def issn_key(value: Any) -> Any:
+    """«ISSN 1234-567x», «1234567X» → «1234-567X», как в справочнике journals: списки журнала ищутся по равенству.
+    Не похожее на ISSN остаётся как есть — импорт из-за него не упадёт."""
+    if not isinstance(value, str):
+        return value
+    m = _ISSN.fullmatch(value.strip().upper())
+    return f"{m[1]}-{m[2]}" if m else value
+
+
 Url = Annotated[str | None, BeforeValidator(_url)]
 Text = Annotated[str | None, Field(max_length=20000)]
 Short = Annotated[str | None, Field(max_length=1000)]
@@ -322,7 +334,7 @@ class PublicationIn(CommonIn):
     publisher: Short = None
     doi: Short = None
     isbn: Short = None
-    issn: Short = None
+    issn: Annotated[Short, BeforeValidator(issn_key)] = None
     indexing: list[Literal["scopus", "wos", "rinc", "vak", "core_rinc"]] = Field(default_factory=list)
     relatedTalkId: UUID | None = None
 

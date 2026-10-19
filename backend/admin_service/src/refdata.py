@@ -24,6 +24,7 @@ from shared.db.base import Base
 from shared.logging import get_logger, setup_logging
 from shared.refdata import Classifier, Direction, Journal
 from shared.uow import uow_write_factory
+from shared.works.schemas import issn_key
 
 logger = get_logger("refdata")
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
@@ -46,6 +47,8 @@ def read_rows(kind: str, text: str) -> list[dict]:
         for c in ("lists", "subjects"):
             if c in values:
                 values[c] = [x.strip() for x in values[c].split(",") if x.strip()]
+        if kind == "journals":
+            values["issn"] = issn_key(values["issn"])  # в том же виде, что у работ
         out.append(values)
     return out
 

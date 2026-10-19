@@ -57,9 +57,13 @@ def plain(q: str) -> str:
 
 def ts_query(q: str) -> ColumnElement:
     """websearch_to_tsquery понимает кавычки, or и минус и на любом вводе не падает. ё → е, как в search.
-    Каждая лексема после стемминга становится префиксом: «нейр» → 'нейр':* находит «нейронные»."""
+    Лексема от 3 символов после стемминга становится префиксом: «нейр» → 'нейр':* находит «нейронные».
+    Короче — точно: «ИИ» стеммится в 'и', и 'и':* нашёл бы всё, где есть слово на «и»."""
     exact = func.websearch_to_tsquery("russian", q.lower().replace("ё", "е"))
-    return cast(func.regexp_replace(cast(exact, Text), r"'(?:[^']|'')+'", r"\&:*", "g"), TSQUERY)
+    prefixed = func.regexp_replace(cast(exact, Text), r"'(?:[^']|'')+'", r"\&:*", "g")
+    # Второй проход, а не {3,} в первом: короткая лексема пропускалась бы, и шаблон схватил бы «' & '» между словами.
+    # После первого прохода за кавычкой всегда «:*» и ещё знак, так что 1–2 символа — только сама лексема.
+    return cast(func.regexp_replace(prefixed, r"'((?:[^']|''){1,2})':\*", r"'\1'", "g"), TSQUERY)
 
 
 def fts(q: str) -> ColumnElement[bool]:
@@ -74,10 +78,13 @@ def few(exact: Select) -> ColumnElement[bool]:
 def matches(q: str) -> ColumnElement[bool]:
     """Единый поиск работ для каталога, фасетов и рабочего места: полнотекстовый по префиксам,
     а если точных совпадений мало — ещё и похожие по word_similarity название и ФИО (опечатки).
-    ponytail: «мало» считается по всем работам, а не по выдаче с фильтрами; хватит для подсказок."""
+    ponytail: «мало» считается по всем работам, включая черновики и скрытые, а не по выдаче с фильтрами
+    и видимостью: matches общий с рабочим местом, которому черновики нужны; хватит для подсказок."""
     words = plain(q)
     if not words or OPERATORS.search(q.lower()):
         return fts(q)  # с кавычками, минусом или or человек просит точно — похожие не подмешиваем
+    if max(map(len, words.split())) < 3:
+        return fts(q)  # «в», «по», «ИИ»: у одной-двух букв похожи почти все названия
     similar_people = (
         select(WorkPerson.work_id)
         .join(PersonName, PersonName.person_id == WorkPerson.person_id)
@@ -140,10 +147,11 @@ class WorkRepository:
         await uow.session.execute(REFRESH_SEARCH, {"ids": list(ids)})
 
     async def journal_lists(self, uow: UnitOfWork, works: Iterable[Work]) -> dict[UUID, list[str]]:
-        """Коды списков журнала: по ISSN, а без ISSN — по точному названию журнала."""
+        """Коды списков журнала: по ISSN, а если ISSN нет или его нет в справочнике — по точному названию журнала.
+        Фасет journalList (search._journal_lists) считает так же."""
         pubs = [w for w in works if w.type == "publication"]
         issns = {w.issn for w in pubs if w.issn}
-        venues = {w.details.get("venue") for w in pubs if not w.issn and w.details.get("venue")}
+        venues = {w.details.get("venue") for w in pubs if w.details.get("venue")}
         if not issns and not venues:
             return {}
         rows = (
@@ -156,7 +164,7 @@ class WorkRepository:
         return {
             w.id: lists
             for w in pubs
-            if (lists := by_issn.get(w.issn) if w.issn else by_name.get(w.details.get("venue")))
+            if (lists := by_issn[w.issn] if w.issn in by_issn else by_name.get(w.details.get("venue")))
         }
 
     async def find_duplicate(

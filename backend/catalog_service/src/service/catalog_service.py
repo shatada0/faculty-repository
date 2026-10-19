@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.sql import ColumnElement
 
 from catalog_service.src.service.gost import gost_citation
@@ -60,10 +60,18 @@ class CatalogService:
 
     async def _public(self, uow: Any, works: list[Work]) -> list[dict]:
         lists = await self.works.journal_lists(uow, works)
+        related = {w.related_id for w in works if w.related_id}
+        # связанная работа-черновик: её id публике не нужен, а фронт сходил бы за ней и получил 404
+        public: set[UUID] = set()
+        if related:
+            public = set(await uow.session.scalars(select(Work.id).where(Work.id.in_(related), published())))
         out = []
         for w in works:
             data = work_dict(w, [L.JOURNAL_LISTS.get(c, c) for c in lists[w.id]] if w.id in lists else None)
             data.pop("consent", None)
+            if w.related_id not in public:
+                data.pop("relatedTalkId", None)
+                data.pop("relatedPublicationId", None)
             approved = [material_dict(m, "") for m in w.materials if m.status == "approved"]
             data["view"] = work_view(data, approved)
             out.append(drop_none(data))
@@ -219,7 +227,10 @@ class CatalogService:
         out |= {(k, v): names.get(v, v) for k in ("author", "supervisor") for v in counts.get(k, {})}
         schemes = [k for k in ("grnti", "oecd", "wos", "asjc") if counts.get(k)]
         if schemes:
-            rows = (await uow.session.execute(select(Classifier).where(Classifier.scheme.in_(schemes)))).scalars()
+            # только показанные коды, а не весь справочник: в ГРНТИ тысячи рубрик
+            codes = [(k, v) for k in schemes for v in counts[k]]
+            stmt = select(Classifier).where(tuple_(Classifier.scheme, Classifier.code).in_(codes))
+            rows = (await uow.session.execute(stmt)).scalars()
             names = {(c.scheme, c.code): c.name for c in rows}
             out |= {(k, v): f"{v} {names.get((k, v), '')}".strip() for k in schemes for v in counts[k]}
         if counts.get("direction"):
@@ -317,7 +328,9 @@ class CatalogService:
 
     async def staff(self, *, q: str | None, departments: list[str], sort: str | None) -> dict:
         stmt = select(Person).where(Person.kind == "staff", Person.merged_into.is_(None))
-        if q and (ids := name_search(q)) is not None:
+        if q:
+            if (ids := name_search(q)) is None:
+                return {"items": []}  # «!!!» — ни буквы, ни цифры: никого, как в выдаче работ и подсказках
             stmt = stmt.where(Person.id.in_(ids))
         if departments:
             stmt = stmt.where(Person.department.in_(departments))
