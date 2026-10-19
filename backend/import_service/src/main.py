@@ -30,8 +30,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app.state.publisher = MessageBusPublisher(channel)
             await app.state.publisher.start()
             service = build_service(app)
+            consumer_channel = await connection.channel()
+            # Без лимита после рестарта весь бэклог разом ждал бы блокировку одного импорта и выел пул соединений базы
+            await consumer_channel.set_qos(prefetch_count=4)
             consumer = MessageBusConsumer(
-                await connection.channel(),
+                consumer_channel,
                 "import_service",
                 {ImportTopic.ITEM_EXTRACTED: (ItemExtractedDTO, service.on_extracted)},
             )

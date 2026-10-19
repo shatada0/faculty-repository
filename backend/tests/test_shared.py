@@ -70,7 +70,7 @@ def test_csv_delimiter_quotes_bom_crlf() -> None:
     text = "\N{BYTE ORDER MARK}Авторы;Название\r\n" + '"Иванов И. И.; Петров П. П.";"Статья ""в кавычках"""\r\n'
     assert parse_csv(text) == [["Авторы", "Название"], ["Иванов И. И.; Петров П. П.", 'Статья "в кавычках"']]
     assert missing_columns(["Авторы", "Название"], "publication") == ["Вид", "Журнал/сборник", "Год"]
-    record = to_records([["Год", "Название"], ["2024", "X"]], "publication")[0]
+    record = to_records(["Год", "Название"], [["2024", "X"]], "publication")[0]
     assert (record["Год"], record["Название"], record["Авторы"]) == ("2024", "X", "")
 
 

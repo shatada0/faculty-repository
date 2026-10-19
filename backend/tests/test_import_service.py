@@ -1,12 +1,14 @@
 """import_service: таблицы, zip, импорт таблицы и результат воркера по архиву."""
 
 import io
+import unicodedata
 import uuid
 import zipfile
 
 import pytest
 from fastapi import UploadFile
 from fastapi.routing import APIRoute
+from sqlalchemy import select
 
 from admin_service.src.service.works_service import WorkService
 from import_service.src.api import router as import_router
@@ -18,6 +20,8 @@ from shared.bus.consumer import Delivery
 from shared.bus.contracts import ItemExtractedDTO
 from shared.exceptions import BadRequestError
 from shared.imports import Import, ImportItem
+from shared.imports.tables import TooManyRows, read_table
+from shared.people import Person
 from shared.repository.people_repository import PersonRepository
 from shared.repository.works_repository import WorkRepository
 from shared.uow import uow_write_factory
@@ -84,7 +88,7 @@ def test_zip_only_pdfs_no_paths_no_links(tmp_path) -> None:
     path.write_bytes(
         _zip({"../../evil/Иванов_ВКР.pdf": b"%PDF-1", "notes.txt": b"x", "inner.zip": b"PK"}, "link.pdf").getvalue()
     )
-    out = archive.extract_pdfs(path, tmp_path)
+    out, _ = archive.extract_pdfs(path, tmp_path)
     assert [name for name, _ in out] == ["Иванов_ВКР.pdf"]
     assert out[0][1] == tmp_path / "1.pdf"  # имя из архива в путь не попало
 
@@ -96,9 +100,69 @@ def test_zip_limits(tmp_path, monkeypatch) -> None:
     with pytest.raises(archive.ArchiveError):
         archive.extract_pdfs(path, tmp_path)
     monkeypatch.setattr(archive, "MAX_FILES", 10)
+    with pytest.raises(archive.ArchiveError):  # лимит на всю загрузку: прошлые zip уже дали 8 файлов
+        archive.extract_pdfs(path, tmp_path, files=8)
     monkeypatch.setattr(archive, "MAX_TOTAL", 10)
     with pytest.raises(archive.ArchiveError, match="2 ГБ"):
         archive.extract_pdfs(path, tmp_path)
+    monkeypatch.setattr(archive, "MAX_TOTAL", 20)
+    with pytest.raises(archive.ArchiveError, match="2 ГБ"):  # 6 байт этого zip поверх 15 от прошлых
+        archive.extract_pdfs(path, tmp_path, used=15)
+
+
+def _raw_names_zip(*names: bytes) -> bytes:
+    """zip с байтами имён как есть и без флага UTF-8 — так пишут 7-Zip (cp866) и Mac (UTF-8).
+    zipfile сам так не запишет: не-ASCII имя он кодирует в UTF-8 и ставит флаг. Пишем ASCII-заглушку той же длины."""
+    buf = io.BytesIO()
+    stubs = [chr(ord("a") + i).encode() * len(raw) for i, raw in enumerate(names)]
+    with zipfile.ZipFile(buf, "w") as zf:
+        for stub in stubs:
+            zf.writestr(stub.decode(), b"%PDF-1")
+    data = buf.getvalue()
+    for stub, raw in zip(stubs, names, strict=True):
+        data = data.replace(stub, raw)  # в локальном заголовке и в центральном каталоге
+    return data
+
+
+def test_zip_names_from_windows_and_mac(tmp_path) -> None:
+    path = tmp_path / "a.zip"
+    path.write_bytes(_raw_names_zip("Иванов.pdf".encode("cp866"), "Йошкин.pdf".encode()))
+    out, _ = archive.extract_pdfs(path, tmp_path)
+    assert [name for name, _ in out] == ["Иванов.pdf", "Йошкин.pdf"]
+    with zipfile.ZipFile(path := tmp_path / "b.zip", "w") as zf:
+        zf.writestr(unicodedata.normalize("NFD", "Ёлкин.pdf"), b"%PDF-1")  # Mac: «Ё» двумя символами
+    out, _ = archive.extract_pdfs(path, tmp_path)
+    assert [name for name, _ in out] == ["Ёлкин.pdf"]
+
+
+def test_unreadable_zip_entry_is_user_error(tmp_path) -> None:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("x.pdf", b"%PDF-1")
+    data = bytearray(buf.getvalue())
+    data[6] |= 1  # флаг «зашифровано» в локальном заголовке
+    data[data.find(b"PK\x01\x02") + 8] |= 1  # и в центральном каталоге
+    path = tmp_path / "a.zip"
+    path.write_bytes(bytes(data))
+    with pytest.raises(archive.ArchiveError, match="с паролем"):
+        archive.extract_pdfs(path, tmp_path)
+
+
+def test_table_rows_keep_excel_numbers_and_cap() -> None:
+    rows = read_table("t.csv", "Авторы;Название\n\nА;Первая\n".encode())
+    assert rows == [(1, ["Авторы", "Название"]), (3, ["А", "Первая"])]
+    with pytest.raises(TooManyRows):
+        read_table("t.csv", "Авторы;Название\nА;1\nА;2\nА;3\n".encode(), max_rows=2)
+    assert len(read_table("t.csv", "Авторы;Название\nА;1\nА;2\n".encode(), max_rows=2)) == 3
+
+
+def test_isbn10_and_talk_year_column() -> None:
+    row = {"Название": "T", "Авторы": "А", "Год": "2024", "Вид": "Монография", "Журнал/сборник": ""}
+    fields, meta, _ = records.publication(row | {"ISSN/ISBN": "5-02-013850-9"})
+    assert (fields["isbn"], fields["issn"], "isbn" in meta) == ("5-02-013850-9", None, True)
+    fields, _, _ = records.publication(row | {"ISSN/ISBN": "ISSN 1234-567X"})
+    assert (fields["isbn"], fields["issn"]) == (None, "ISSN 1234-567X")
+    assert records.column("talk", "year") == "Дата начала" and records.column("publication", "year") == "Год"
 
 
 async def test_table_import(demo: dict) -> None:
@@ -209,6 +273,93 @@ async def test_unknown_department_leaves_no_ai_badge(demo: dict) -> None:
     await service.on_extracted(ItemExtractedDTO(item_id=item.id, fields=fields, field_meta=meta), DELIVERY)
     work = await works().get(uuid.UUID((await service.get(imp.id, None))["items"][0]["workId"]))
     assert work["department"] is None and "department" not in work["fieldMeta"]  # не «ИИ, 85%» у пустого поля
+
+
+def _upload(name: str, data: bytes) -> UploadFile:
+    return UploadFile(io.BytesIO(data), filename=name, size=len(data))
+
+
+META = (
+    "Имя файла;ФИО автора;Тема;ФИО руководителя;Год;Уровень;Код направления;Кафедра;Дисциплина;Работа или проект\n"
+    ";;;;;;;;;\n"
+    "Табличный.pdf;Табличный Студент Тестович;;Белова Наталья Викторовна;2026;бакалавриат;09.03.02;"
+    "Кафедра информационных систем;Базы данных;проект\n"
+)
+
+
+async def test_archive_upload_with_meta_table(demo: dict) -> None:
+    storage, publisher = FakeStorage(), FakePublisher()
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, publisher)
+    zipped = _raw_names_zip("папка/Табличный.pdf".encode("cp866"))  # как пишет 7-Zip на русской Windows
+    files = [_upload("Архив.zip", zipped), _upload("Отдельный.pdf", b"%PDF-1.4")]
+
+    bad = _upload("meta.csv", "Имя файла;Тема\nx.pdf;y\n".encode())
+    with pytest.raises(BadRequestError, match="нет обязательных колонок"):
+        await service.create("archive", "vkr", files, bad, demo["user"])
+    twice = META + META.splitlines()[-1] + "\n"
+    with pytest.raises(BadRequestError, match="повторяется"):
+        await service.create("archive", "vkr", files, _upload("meta.csv", twice.encode()), demo["user"])
+    assert storage.objects == {} and publisher.published == []  # отказ — ничего не залито и не отправлено
+
+    imp = await service.create("archive", "vkr", files, _upload("meta.csv", META.encode()), demo["user"])
+    assert (imp["fileName"], imp["metaTableName"]) == ("Архив.zip и ещё 1", "meta.csv")
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    assert [i["ref"] for i in detail["items"]] == ["Табличный.pdf", "Отдельный.pdf"]
+    assert len(publisher.published) == 2 and not any(k.endswith(".zip") for k in storage.objects)
+
+    # ИИ «уверен» в другом ФИО и узнал курсовую: таблица ВКР её дисциплину не теряет, а профиль под ФИО от ИИ не заводится
+    item_id = publisher.published[0][1].item_id
+    fields = {"title": "Тема от ИИ", "authors": ["Выдуманный Автор Ии"], "year": 2026, "workType": "coursework"}
+    meta = {k: {"source": "ai", "confidence": 0.85} for k in ("title", "authors", "year")}
+    await service.on_extracted(ItemExtractedDTO(item_id=item_id, fields=fields, field_meta=meta), DELIVERY)
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    work = await works().get(uuid.UUID(detail["items"][0]["workId"]))
+    assert work["title"] == "Тема от ИИ" and work["fieldMeta"]["title"]["source"] == "ai"  # пустая ячейка не стёрла
+    assert [a["displayName"] for a in work["authors"]] == ["Табличный С. Т."] and work["authors"][0]["personId"]
+    assert (work["type"], work["discipline"], work["kind"]) == ("coursework", "Базы данных", "project")
+    async with uow_write_factory() as uow:
+        assert await uow.session.scalar(select(Person).where(Person.full_name == "Выдуманный Автор Ии")) is None
+
+
+class BrokenStorage(FakeStorage):
+    async def copy(self, source: str, key: str) -> None:
+        raise ConnectionError("MinIO недоступен")
+
+
+class BrokenPublisher(FakePublisher):
+    async def publish(self, topic, dto) -> None:
+        if self.published:
+            raise ConnectionError("RabbitMQ недоступен")
+        await super().publish(topic, dto)
+
+
+async def test_failures_end_in_error_not_endless_queue(demo: dict) -> None:
+    """Шина не приняла событие или не сохранился результат — элементы в ошибке, импорт готов, «Повторить» доступна."""
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), BrokenStorage(), BrokenPublisher())
+    files = [_upload(f"{n}.pdf", b"%PDF-1.4") for n in (1, 2, 3)]
+    imp = await service.create("archive", "vkr", files, None, demo["user"])
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    assert [i["status"] for i in detail["items"]] == ["pending", "error", "error"]
+    assert detail["items"][1]["error"] == "Файл не отправлен на разбор"
+
+    item_id = service.publisher.published[0][1].item_id
+    fields = {"title": "ВКР, которую не сохранить", "year": 2026}
+    meta = {k: {"source": "ai", "confidence": 0.85} for k in fields}
+    await service.on_extracted(ItemExtractedDTO(item_id=item_id, fields=fields, field_meta=meta), DELIVERY)
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    assert detail["import"]["status"] == "done" and detail["import"]["stats"]["errors"] == 3
+    assert detail["items"][0]["error"] == "Не удалось сохранить результат разбора"
+
+
+async def test_preview_and_table_refs_match_excel_lines(demo: dict) -> None:
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
+    rows = "Авторы;Название;Вид;Журнал/сборник;Год\n\nОрлов Д. С.;Строка через пустую;Тезисы;Сборник;2026\n"
+    preview = await service.preview("publication", _upload("p.csv", rows.encode()))
+    assert [r["line"] for r in preview["rows"]] == [3]
+    imp = await service.create("table", "publication", [_upload("p.csv", rows.encode())], None, demo["user"])
+    detail = await service.get(uuid.UUID(imp["id"]), "filled")
+    assert [i["ref"] for i in detail["items"]] == ["Строка 3"]
+    assert (await service.get(uuid.UUID(imp["id"]), "published"))["items"] == []
 
 
 def test_routes_need_role() -> None:

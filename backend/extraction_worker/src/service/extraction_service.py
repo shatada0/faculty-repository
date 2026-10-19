@@ -52,6 +52,10 @@ class ExtractionHandler:
                 result.error = "ИИ не ответил"
             except ItemError as e:
                 result.error = str(e)
+            except Exception:
+                # без ответа элемент навсегда остался бы «в очереди»; ошибку модератор повторит кнопкой
+                logger.exception("Элемент не разобран", extra=log)
+                result.error = "Файл не удалось разобрать"
         logger.log(
             logging.WARNING if result.error else logging.INFO,
             "Элемент разобран",

@@ -1005,7 +1005,7 @@ async def write_demo() -> tuple[dict[str, list[dict]], dict[str, uuid.UUID]]:
 
 async def load_people(path: Path) -> None:
     """Сотрудники из таблицы кафедры; повторный запуск обновляет, а не дублирует."""
-    rows = read_table(path.name, await asyncio.to_thread(path.read_bytes))
+    rows = [cells for _, cells in read_table(path.name, await asyncio.to_thread(path.read_bytes))]
     header = [h.strip() for h in rows[0]] if rows else []
     people = PersonRepository()
     works = WorkRepository()

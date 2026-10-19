@@ -7,7 +7,8 @@ from shared.works import labels as L
 
 CYRILLIC = re.compile(r"[а-яё]", re.IGNORECASE)
 CONSENT = re.compile(r"^(да|yes|1|true|\+)$", re.IGNORECASE)
-ISBN = re.compile(r"^(isbn|97[89])", re.IGNORECASE)
+# ISSN узнаём по форме NNNN-NNNX; всё остальное в колонке — ISBN, в том числе ISBN-10 «5-02-013850-9»
+ISSN = re.compile(r"(issn\s*)?\d{4}-?\d{3}[\dx]", re.IGNORECASE)
 # Поле черновика → колонка шаблона: человеку понятнее, в какой ячейке ошибка.
 COLUMN_OF = {
     "title": "Название",
@@ -19,6 +20,13 @@ COLUMN_OF = {
     "pages": "Страницы",
     "department": "Кафедра",
 }
+
+
+def column(work_type: str, field: str) -> str:
+    """Колонка, где ошибка. Год доклада берётся из даты начала: колонки «Год» в шаблоне докладов нет."""
+    if work_type == "talk" and field == "year":
+        return "Дата начала"
+    return COLUMN_OF.get(field, L.FIELD.get(field, field))
 
 
 def split_names(s: str) -> list[str]:
@@ -46,7 +54,7 @@ def _filled(record: dict[str, str], mapping: dict[str, str]) -> dict[str, dict]:
 def publication(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], list[str]]:
     """→ (поля, fieldMeta, имена авторов для сопоставления)."""
     idn = r.get("ISSN/ISBN", "").strip()
-    is_isbn = bool(ISBN.match(idn))
+    is_issn = bool(ISSN.fullmatch(idn))
     indexing = [code for x in re.split(r"[,;]", r.get("Индексация", "")) if (code := L.from_label(L.INDEXING, x))]
     fields = {
         "title": r["Название"],
@@ -62,8 +70,8 @@ def publication(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], lis
         "pages": r.get("Страницы"),
         "publisher": r.get("Издательство"),
         "doi": r.get("DOI"),
-        "isbn": re.sub(r"^isbn\s*", "", idn, flags=re.IGNORECASE) if is_isbn else None,
-        "issn": None if is_isbn else idn,
+        "isbn": None if is_issn else re.sub(r"^isbn\s*", "", idn, flags=re.IGNORECASE),
+        "issn": idn if is_issn else None,
         "indexing": list(dict.fromkeys(indexing)),
         "externalUrl": r.get("Ссылка"),
     }
@@ -81,7 +89,7 @@ def publication(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], lis
             "pages": "Страницы",
             "publisher": "Издательство",
             "doi": "DOI",
-            "issn": "ISSN/ISBN",
+            "issn" if is_issn else "isbn": "ISSN/ISBN",
             "indexing": "Индексация",
         },
     )
@@ -130,21 +138,29 @@ def talk(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], list[str],
 
 
 def student(r: dict[str, str], work_type: str) -> tuple[dict[str, Any], dict[str, dict]]:
-    """Строка таблицы сведений к архиву ВКР или курсовых. ФИО автора и руководителя сопоставляет сервис."""
+    """Строка таблицы сведений к архиву ВКР или курсовых: только заполненные ячейки, пустые оставляют найденное ИИ.
+
+    ФИО автора и руководителя сопоставляет сервис.
+    """
     consent = bool(CONSENT.match(r.get("Согласие на публикацию текста", "").strip()))
+    kind = r.get("Работа или проект", "")
     fields = {
-        "title": r["Тема"],
-        "year": _int(r["Год"]),
-        "department": r["Кафедра"],
-        "level": L.from_label(L.LEVEL, r["Уровень"]) or "bachelor",
-        "direction": {"code": r["Код направления"], "name": r.get("Название направления")},
+        "title": r.get("Тема"),
+        "year": _int(r.get("Год", "")),
+        "department": r.get("Кафедра"),
+        "level": L.from_label(L.LEVEL, r.get("Уровень", "")),
+        "direction": {"code": code, "name": r.get("Название направления")}
+        if (code := r.get("Код направления"))
+        else None,
         "profile": r.get("Профиль"),
         "discipline": r.get("Дисциплина"),
-        "consent": consent,
-        "accessLevel": "full" if consent and work_type == "vkr" else "card_only",
+        "consent": consent or None,  # «нет» и пусто — как по умолчанию
+        "accessLevel": "full" if consent and work_type == "vkr" else None,
+        "kind": ("project" if re.search("проект", kind, re.IGNORECASE) else "work")
+        if kind and work_type == "coursework"
+        else None,
     }
-    if work_type == "coursework":
-        fields["kind"] = "project" if re.search("проект", r.get("Работа или проект", ""), re.IGNORECASE) else "work"
+    fields = {k: v for k, v in fields.items() if v not in (None, "")}
     meta = _filled(
         r,
         {
@@ -157,9 +173,11 @@ def student(r: dict[str, str], work_type: str) -> tuple[dict[str, Any], dict[str
             "department": "Кафедра",
             "profile": "Профиль",
             "discipline": "Дисциплина",
+            "kind": "Работа или проект",
         },
     )
-    return fields, meta
+    # «Уровень: аспирантура» не распознан — поле осталось от ИИ, и источник у него не таблица
+    return fields, {k: m for k, m in meta.items() if k in fields or k in ("authors", "supervisors")}
 
 
 def row_error(missing: list[str]) -> str:

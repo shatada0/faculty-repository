@@ -2,6 +2,7 @@
 
 import csv
 import io
+from collections.abc import Iterable, Sequence
 from datetime import date, datetime
 
 from openpyxl import load_workbook
@@ -67,8 +68,16 @@ TEMPLATES: dict[str, list[Column]] = {
 }
 
 
+MAX_ROWS = 10000
+Row = tuple[int, list[str]]  # (номер строки, как его показывает Excel; ячейки)
+
+
 class TableError(Exception):
     """Таблицу не прочитать: не csv/xlsx или битый файл."""
+
+
+class TooManyRows(TableError):
+    pass
 
 
 def _norm(s: str) -> str:
@@ -76,12 +85,11 @@ def _norm(s: str) -> str:
 
 
 def parse_csv(text: str) -> list[list[str]]:
-    """Разделитель угадывается по первой строке: русский Excel пишет «;»."""
+    """Разделитель угадывается по первой строке: русский Excel пишет «;». Пустые строки остаются: по ним считается номер."""
     text = text.removeprefix("\ufeff")
     first = text.split("\n", 1)[0]
     delimiter = max((";", "\t", ","), key=first.count) if any(d in first for d in ";\t,") else ","
-    rows = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
-    return [r for r in rows if any(c.strip() for c in r)]
+    return list(csv.reader(io.StringIO(text, newline=""), delimiter=delimiter))
 
 
 def _cell(v: object) -> str:
@@ -92,26 +100,34 @@ def _cell(v: object) -> str:
     return "" if v is None else str(v)
 
 
-def read_table(name: str, data: bytes, max_rows: int = 10000) -> list[list[str]]:
-    """csv или xlsx → строки ячеек. xlsx — openpyxl read_only, рядом defusedxml: XXE не пройдёт."""
+def _numbered(rows: Iterable[Sequence[object]], max_rows: int) -> list[Row]:
+    """Непустые строки с номером: первая — заголовок, данных не больше max_rows, иначе TooManyRows."""
+    out: list[Row] = []
+    for n, row in enumerate(rows, start=1):
+        cells = [_cell(c) for c in row]
+        if any(c.strip() for c in cells):
+            if len(out) > max_rows:
+                raise TooManyRows(f"В таблице больше {max_rows} строк")
+            out.append((n, cells))
+    return out
+
+
+def read_table(name: str, data: bytes, max_rows: int = MAX_ROWS) -> list[Row]:
+    """csv или xlsx → непустые строки с номерами. xlsx — openpyxl read_only, рядом defusedxml: XXE не пройдёт."""
     try:
         if name.lower().endswith(".csv"):
             for encoding in ("utf-8-sig", "cp1251"):
                 try:
-                    return parse_csv(data.decode(encoding))[: max_rows + 1]
+                    text = data.decode(encoding)
                 except UnicodeDecodeError:
                     continue
+                return _numbered(parse_csv(text), max_rows)
             raise TableError("Кодировка не распознана")
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-        rows = []
-        for row in wb.worksheets[0].iter_rows(values_only=True):
-            cells = [_cell(c) for c in row]
-            if any(c.strip() for c in cells):
-                rows.append(cells)
-            if len(rows) > max_rows:
-                break
-        wb.close()
-        return rows
+        try:
+            return _numbered(wb.worksheets[0].iter_rows(values_only=True), max_rows)
+        finally:
+            wb.close()
     except TableError:
         raise
     except Exception as e:  # битый zip, не та книга — для пользователя это одно и то же
@@ -123,13 +139,11 @@ def missing_columns(header: list[str], work_type: str) -> list[str]:
     return [name for name, required in TEMPLATES[work_type] if required and _norm(name) not in have]
 
 
-def to_records(rows: list[list[str]], work_type: str) -> list[dict[str, str]]:
-    """Строки → словари по названиям колонок шаблона; лишние колонки игнорируются."""
-    if not rows:
-        return []
-    header = [_norm(h) for h in rows[0]]
-    idx = [(name, header.index(_norm(name)) if _norm(name) in header else -1) for name, _ in TEMPLATES[work_type]]
-    return [{name: (r[i].strip() if 0 <= i < len(r) else "") for name, i in idx} for r in rows[1:]]
+def to_records(header: list[str], rows: list[list[str]], work_type: str) -> list[dict[str, str]]:
+    """Строки данных → словари по названиям колонок шаблона; лишние колонки игнорируются."""
+    keys = [_norm(h) for h in header]
+    idx = [(name, keys.index(_norm(name)) if _norm(name) in keys else -1) for name, _ in TEMPLATES[work_type]]
+    return [{name: (r[i].strip() if 0 <= i < len(r) else "") for name, i in idx} for r in rows]
 
 
 def missing_in_row(record: dict[str, str], work_type: str) -> list[str]:

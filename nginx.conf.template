@@ -58,7 +58,8 @@ server {
     location /api/auth/            { proxy_pass http://auth_service; }
 
     # загрузки: лимиты = maxBytes из /api/upload-limits; аноним получает 401 до приёма тела
-    location /api/admin/imports                  { auth_request /_auth; client_max_body_size 500m; proxy_request_buffering off; proxy_pass http://import_service; }
+    # read_timeout: таблица на 10 000 строк и архив на 1000 PDF разбираются внутри запроса — дольше 60 с по умолчанию
+    location /api/admin/imports                  { auth_request /_auth; client_max_body_size 500m; proxy_request_buffering off; proxy_read_timeout 300s; proxy_pass http://import_service; }
     location ~ ^/api/admin/works/[^/]+/file$     { auth_request /_auth; client_max_body_size 100m; proxy_request_buffering off; proxy_pass http://admin_service; }
     location ~ ^/api/my/works/[^/]+/materials$   { auth_request /_auth; client_max_body_size 50m; proxy_request_buffering off; proxy_pass http://admin_service; }
     # свой proxy_set_header: заголовки server сюда не наследуются, для /auth/me они не нужны

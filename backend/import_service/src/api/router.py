@@ -40,7 +40,7 @@ async def imports(service: Service) -> list[dict]:
 async def import_detail(
     service: Service,
     import_id: UUID,
-    status: Literal["pending", "extracted", "filled", "duplicate", "error"] | None = None,
+    status: Literal["pending", "extracted", "filled", "published", "duplicate", "error"] | None = None,
 ) -> dict:
     return await service.get(import_id, status)
 
