@@ -7,7 +7,14 @@ from dataclasses import dataclass
 
 import httpx
 
-from extraction_worker.src.service.extract import OCR_TIMEOUT, PDF_TIMEOUT, ItemError, LLMUnavailable, extract
+from extraction_worker.src.service.extract import (
+    OCR_TIMEOUT,
+    PDF_TIMEOUT,
+    ItemError,
+    LLMUnavailable,
+    extract,
+    extract_record,
+)
 from shared.bus.consumer import Delivery
 from shared.bus.contracts import ImportTopic, ItemCreatedDTO, ItemExtractedDTO
 from shared.bus.publisher import MessageBusPublisher
@@ -45,12 +52,15 @@ class ExtractionHandler:
         else:
             try:
                 async with asyncio.timeout(ITEM_TIMEOUT):
-                    log["stage"] = "s3"  # extract двигает стадию дальше: итоговая строка скажет, где упало
-                    if (size := await self.storage.size(dto.file_key)) > MAX_PDF_BYTES:
-                        raise ItemError(f"Файл больше {MAX_PDF_BYTES // 1024**2} МБ — ИИ такие не разбирает")
-                    pdf = await self.storage.get(dto.file_key)
-                    logger.info("PDF получен", extra=log | {"bytes": size})
-                    result.fields, result.field_meta = await extract(pdf, self.http, log)
+                    if dto.text is not None:  # запись списка текстом: файла нет, сразу ИИ
+                        result.fields, result.field_meta = await extract_record(dto.text, dto.work_type, self.http, log)
+                    elif dto.file_key:
+                        log["stage"] = "s3"  # extract двигает стадию дальше: итоговая строка скажет, где упало
+                        if (size := await self.storage.size(dto.file_key)) > MAX_PDF_BYTES:
+                            raise ItemError(f"Файл больше {MAX_PDF_BYTES // 1024**2} МБ — ИИ такие не разбирает")
+                        pdf = await self.storage.get(dto.file_key)
+                        logger.info("PDF получен", extra=log | {"bytes": size})
+                        result.fields, result.field_meta = await extract(pdf, self.http, log)
             except LLMUnavailable:
                 if delivery.retries < MAX_RETRIES:
                     raise RetryMessageError("LLM-сервер недоступен") from None

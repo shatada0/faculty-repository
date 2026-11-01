@@ -20,7 +20,7 @@ from shared.works.models import WORK_TYPES
 class Import(Base):
     __tablename__ = "imports"
     __table_args__ = (
-        one_of("kind", ("archive", "table")),
+        one_of("kind", ("archive", "table", "text")),
         one_of("work_type", WORK_TYPES),
         one_of("status", ("uploading", "processing", "done", "failed")),
     )
@@ -54,6 +54,7 @@ class ImportItem(Base):
     unmatched_authors: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
     file_key: Mapped[str | None] = mapped_column(Text)
     meta: Mapped[dict | None] = mapped_column(JSONB)  # строка таблицы сведений к этому файлу архива
+    text: Mapped[str | None] = mapped_column(Text)  # запись из списка текстом: её разбирает ИИ
 
 
 class ExtractionResult(Base):

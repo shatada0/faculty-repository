@@ -1,6 +1,7 @@
 """Строка таблицы или ответ ИИ → поля черновика в форме контракта и их источники (fieldMeta)."""
 
 import re
+from collections.abc import Callable
 from typing import Any
 
 from shared.works import labels as L
@@ -47,12 +48,19 @@ def _int(s: str) -> int | str:
     return int(s) if s.strip().isdigit() else s  # не число — пусть схема записи скажет, где ошибка
 
 
-def _filled(record: dict[str, str], mapping: dict[str, str]) -> dict[str, dict]:
-    return {field: {"source": "table"} for field, column in mapping.items() if record.get(column)}
+Source = Callable[[str], dict]  # колонка → fieldMeta поля из неё
 
 
-def publication(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], list[str]]:
-    """→ (поля, fieldMeta, имена авторов для сопоставления)."""
+def from_table(_: str) -> dict:
+    return {"source": "table"}
+
+
+def _filled(record: dict[str, str], mapping: dict[str, str], source: Source) -> dict[str, dict]:
+    return {field: source(column) for field, column in mapping.items() if record.get(column)}
+
+
+def publication(r: dict[str, str], source: Source = from_table) -> tuple[dict[str, Any], dict[str, dict], list[str]]:
+    """→ (поля, fieldMeta, имена авторов для сопоставления). source — откуда колонка: таблица, BibTeX/RIS, ИИ."""
     idn = r.get("ISSN/ISBN", "").strip()
     is_issn = bool(ISSN.fullmatch(idn))
     indexing = [code for x in re.split(r"[,;]", r.get("Индексация", "")) if (code := L.from_label(L.INDEXING, x))]
@@ -92,11 +100,14 @@ def publication(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], lis
             "issn" if is_issn else "isbn": "ISSN/ISBN",
             "indexing": "Индексация",
         },
+        source,
     )
     return fields, meta, split_names(r["Авторы"])
 
 
-def talk(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], list[str], list[str]]:
+def talk(
+    r: dict[str, str], source: Source = from_table
+) -> tuple[dict[str, Any], dict[str, dict], list[str], list[str]]:
     """→ (поля, fieldMeta, докладчики, соавторы)."""
     start = parse_date(r["Дата начала"])
     fields = {
@@ -133,6 +144,7 @@ def talk(r: dict[str, str]) -> tuple[dict[str, Any], dict[str, dict], list[str],
             "kind": "Вид доклада",
             "format": "Формат",
         },
+        source,
     )
     return fields, meta, split_names(r["Докладчики"]), split_names(r.get("Соавторы", ""))
 
@@ -175,6 +187,7 @@ def student(r: dict[str, str], work_type: str) -> tuple[dict[str, Any], dict[str
             "discipline": "Дисциплина",
             "kind": "Работа или проект",
         },
+        from_table,
     )
     # «Уровень: аспирантура» не распознан — поле осталось от ИИ, и источник у него не таблица
     return fields, {k: m for k, m in meta.items() if k in fields or k in ("authors", "supervisors")}
@@ -186,3 +199,19 @@ def row_error(missing: list[str]) -> str:
     if "Дата начала" in missing:
         return "Не указана дата начала"
     return f"Не заполнено: {', '.join(missing)}"
+
+
+NUMBERED = re.compile(r"^\s*\d{1,4}\s*[.)]\s+", re.MULTILINE)
+
+
+def split_entries(text: str) -> list[str]:
+    """Список работ текстом → записи. Пронумерован («1. …», «2) …») — по номерам: так выглядит список
+    из eLIBRARY и отчётов, где запись занимает несколько строк. Иначе — по пустым строкам, а без них — по строкам."""
+    text = text.replace("\r\n", "\n").strip()
+    if len(NUMBERED.findall(text)) >= 2:
+        parts = NUMBERED.split(text)
+    elif re.search(r"\n\s*\n", text):
+        parts = re.split(r"\n\s*\n", text)
+    else:
+        parts = text.split("\n")
+    return [" ".join(p.split()) for p in parts if re.search(r"[^\W_]", p)]  # без букв и цифр — не запись

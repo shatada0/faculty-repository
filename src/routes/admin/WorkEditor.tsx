@@ -3,7 +3,7 @@ import { Link, useBlocker, useLocation, useNavigate, useParams, useSearchParams 
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Controller, FormProvider, useForm, useFormContext, type FieldErrors } from 'react-hook-form'
 import {
-  ApiError, createWork, fillFromDoi, getAdminMaterialLink, getAdminWork, getAdminWorkFile, getEvents, getNextInQueue, getRelatedOptions,
+  ApiError, createWork, fillFromDoi, fillFromIsbn, getAdminMaterialLink, getAdminWork, getAdminWorkFile, getEvents, getNextInQueue, getRelatedOptions,
   getUploadLimits, getWorkTemplate, patchWork, publishWork, rejectWork, reviewMaterial, unpublishWork, uploadWorkFile,
 } from '@/api'
 import type { AdminWork, AuthorRef, DoiConflict, FieldMeta, MaterialStatus, SubjectScheme, TalkEvent, WorkType } from '@/api/types'
@@ -27,7 +27,10 @@ const SCHEMES: SubjectScheme[] = ['grnti', 'oecd']
 const PUBLICATION_SCHEMES: SubjectScheme[] = ['grnti', 'oecd', 'wos', 'asjc']
 // ponytail: form values are typed loosely (Work is a union); the server validates and returns field errors.
 type FormValues = Record<string, any>
-type DoiState = { id: string; doi: string; conflicts: DoiConflict[] }
+/** Fill by an identifier: DOI from Crossref, ISBN from Crossref or Open Library — the same conflict flow. */
+type By = 'doi' | 'isbn'
+type DoiState = { id: string; by: By; value: string; conflicts: DoiConflict[] }
+const fillBy = (by: By) => (by === 'doi' ? fillFromDoi : fillFromIsbn)
 
 /** Server work → form values. The server sends every field (null when empty); inputs want ''. The student page count stays a number field. */
 function toForm(w: AdminWork): FormValues {
@@ -229,18 +232,19 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
     navigate(`/admin/works/${nextId}?${sp}`)
   })
 
-  // ---- DOI: the server fills the saved work and reports fields it would overwrite ----
-  const onDoi = () => run('doi', async () => {
-    const doi = String(getValues('doi') ?? '')
-    const r = await fillFromDoi((await save()).id, doi)
+  // ---- DOI / ISBN: the server fills the saved work and reports fields it would overwrite ----
+  const onLookup = (by: By) => run(by, async () => {
+    const value = String(getValues(by) ?? '')
+    const r = await fillBy(by)((await save()).id, value)
     apply(r.work)
-    const conflicts = r.conflicts.length ? { id: r.work.id, doi, conflicts: r.conflicts } : undefined
-    done(r.work, conflicts ? 'Пустые поля заполнены по DOI' : 'Поля заполнены по DOI', conflicts)
+    const conflicts = r.conflicts.length ? { id: r.work.id, by, value, conflicts: r.conflicts } : undefined
+    const what = by === 'doi' ? 'DOI' : 'ISBN'
+    done(r.work, conflicts ? `Пустые поля заполнены по ${what}` : `Поля заполнены по ${what}`, conflicts)
   })
-  const onOverwrite = (d: DoiState) => run('doi', async () => {
-    apply((await fillFromDoi(d.id, d.doi, d.conflicts.map((c) => c.field))).work)
+  const onOverwrite = (d: DoiState) => run(d.by, async () => {
+    apply((await fillBy(d.by)(d.id, d.value, d.conflicts.map((c) => c.field))).work)
     setDoiState(null)
-    setMessage({ tone: 'blue', text: 'Поля перезаписаны по DOI' })
+    setMessage({ tone: 'blue', text: `Поля перезаписаны по ${d.by === 'doi' ? 'DOI' : 'ISBN'}` })
   })
 
   // ---- related work options ----
@@ -324,7 +328,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
           <F name="doi" label="DOI" className="sm:col-span-2" hint={import.meta.env.VITE_USE_MOCKS === 'true' ? 'Для демо: 10.12345/kim.2026.0142, 10.12345/jads.2025.118, 10.12345/pi.2026.07' : undefined}>{(id, d) => (
             <div className="flex gap-2">
               <Input id={id} aria-describedby={d} placeholder="10.xxxx/..." {...register('doi')} aria-invalid={!!errors.doi} />
-              <Button variant="outline" onClick={onDoi} loading={busy === 'doi'}>Заполнить по DOI</Button>
+              <Button variant="outline" onClick={() => onLookup('doi')} loading={busy === 'doi'}>Заполнить по DOI</Button>
             </div>
           )}</F>
           <F name="kind" label="Вид публикации">{(id) => (
@@ -339,7 +343,12 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
           <F name="publisher" label="Издательство">{(id) => <Input id={id} {...register('publisher')} aria-invalid={!!errors.publisher} />}</F>
           <div className="grid grid-cols-2 gap-3">
             <F name="issn" label="ISSN">{(id) => <Input id={id} {...register('issn')} />}</F>
-            <F name="isbn" label="ISBN">{(id) => <Input id={id} {...register('isbn')} />}</F>
+            <F name="isbn" label="ISBN" hint="Книга: заполнить по Crossref или Open Library">{(id, d) => (
+              <div className="flex gap-2">
+                <Input id={id} aria-describedby={d} {...register('isbn')} aria-invalid={!!errors.isbn} />
+                <Button variant="outline" onClick={() => onLookup('isbn')} loading={busy === 'isbn'}>По ISBN</Button>
+              </div>
+            )}</F>
           </div>
           <F name="indexing" label="Индексация" className="sm:col-span-2">{() => (
             <Controller control={control} name="indexing" render={({ field }) => (
@@ -541,19 +550,19 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
         <Dialog open={!!doiState} onClose={() => setDoiState(null)} title="Перезаписать заполненные поля?">
           {doiState && (
             <div className="space-y-3 text-sm">
-              <p>Пустые поля заполнены по DOI. Эти поля уже заполнены и отличаются от данных DOI:</p>
+              <p>Пустые поля заполнены по {doiState.by === 'doi' ? 'DOI' : 'ISBN'}. Эти поля уже заполнены и отличаются от найденного:</p>
               <ul className="space-y-2">
                 {doiState.conflicts.map((c) => (
                   <li key={c.field} className="bg-panel p-2">
                     <p className="font-medium">{c.label}</p>
                     <p className="text-ink-2">сейчас: {c.current}</p>
-                    <p className="text-ink">по DOI: {c.incoming}</p>
+                    <p className="text-ink">{doiState.by === 'doi' ? 'по DOI' : 'по ISBN'}: {c.incoming}</p>
                   </li>
                 ))}
               </ul>
               <div className="flex justify-end gap-2">
                 <Button variant="outline" onClick={() => setDoiState(null)}>Оставить мои значения</Button>
-                <Button onClick={() => onOverwrite(doiState)} loading={busy === 'doi'}>Перезаписать</Button>
+                <Button onClick={() => onOverwrite(doiState)} loading={busy === doiState.by}>Перезаписать</Button>
               </div>
             </div>
           )}

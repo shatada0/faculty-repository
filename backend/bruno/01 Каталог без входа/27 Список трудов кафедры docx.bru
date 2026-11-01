@@ -1,0 +1,22 @@
+meta {
+  name: Список трудов кафедры docx
+  type: http
+  seq: 27
+}
+
+get {
+  url: {{baseUrl}}/api/departments/works.docx?department=Кафедра информационных систем&year=2025
+  body: none
+  auth: none
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("docx во вложении", function () {
+    expect(res.headers["content-type"]).to.include("wordprocessingml");
+    expect(res.headers["content-disposition"]).to.include("attachment");
+  });
+}

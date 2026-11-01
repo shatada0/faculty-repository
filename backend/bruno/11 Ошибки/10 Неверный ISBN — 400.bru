@@ -1,0 +1,22 @@
+meta {
+  name: Неверный ISBN — 400
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/{{tableWorkId}}/isbn
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "isbn": "978-0-262-03384-9"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq isbn
+}

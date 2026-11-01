@@ -9,6 +9,9 @@ from openpyxl import load_workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.worksheet.worksheet import Worksheet
 
+from shared.imports.bibliography import is_bibliography, read_bibliography
+from shared.works.labels import PUB_KIND, from_label
+
 Column = tuple[str, bool]  # (название, обязательная)
 
 
@@ -113,8 +116,17 @@ def _numbered(rows: Iterable[Sequence[object]], max_rows: int) -> list[Row]:
 
 
 def read_table(name: str, data: bytes, max_rows: int = MAX_ROWS) -> list[Row]:
-    """csv или xlsx → непустые строки с номерами. xlsx — openpyxl read_only, рядом defusedxml: XXE не пройдёт."""
+    """csv, xlsx, BibTeX или RIS → непустые строки с номерами. xlsx — openpyxl read_only, рядом defusedxml: XXE не пройдёт.
+
+    BibTeX и RIS становятся таблицей с колонками шаблона публикаций: номер строки — номер записи.
+    """
     try:
+        if is_bibliography(name):
+            records = read_bibliography(name, data)
+            if len(records) > max_rows:
+                raise TooManyRows(f"В файле больше {max_rows} записей")
+            columns = [c for c, _ in TEMPLATES["publication"]]
+            return [(0, columns), *((n, [r[c] for c in columns]) for n, r in enumerate(records, start=1))]
         if name.lower().endswith(".csv"):
             for encoding in ("utf-8-sig", "cp1251"):
                 try:
@@ -147,7 +159,13 @@ def to_records(header: list[str], rows: list[list[str]], work_type: str) -> list
 
 
 def missing_in_row(record: dict[str, str], work_type: str) -> list[str]:
-    return [name for name, required in TEMPLATES[work_type] if required and not record.get(name)]
+    """Незаполненные обязательные колонки. У монографии и пособия журнала нет — колонка «Журнал/сборник» не нужна."""
+    book = work_type == "publication" and from_label(PUB_KIND, record.get("Вид", "")) in ("monograph", "textbook")
+    return [
+        name
+        for name, required in TEMPLATES[work_type]
+        if required and not record.get(name) and not (book and name == "Журнал/сборник")
+    ]
 
 
 # ---------- запись: «=HYPERLINK(…)» из импорта не должен стать живой формулой в Excel модератора ----------

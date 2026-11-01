@@ -109,7 +109,7 @@ MB = 1024 * 1024
 # Лимиты загрузки: их отдаёт /api/upload-limits и по ним же проверяет сервер. nginx держит те же maxBytes.
 UPLOAD_LIMITS = {
     "archive": {"accept": [".zip", ".pdf"], "maxBytes": 500 * MB},  # на всю загрузку: PDF и zip вперемешку
-    "table": {"accept": [".xlsx", ".csv"], "maxBytes": 10 * MB},
+    "table": {"accept": [".xlsx", ".csv", ".bib", ".ris"], "maxBytes": 10 * MB},  # BibTeX и RIS — публикации
     "workFile": {"accept": [".pdf", ".pptx", ".docx"], "maxBytes": 100 * MB},
     "material": {"accept": [".pdf", ".pptx", ".docx", ".zip"], "maxBytes": 50 * MB},
 }

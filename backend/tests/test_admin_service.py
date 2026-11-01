@@ -562,6 +562,8 @@ async def test_import_from_orcid(demo: dict, monkeypatch: pytest.MonkeyPatch) ->
     person = await people.create(
         PersonIn(fullName="Рахуба Максим Владимирович", kind="staff", orcid="0000-0002-1825-0097"), demo["user"]
     )
+    # однофамилица с теми же инициалами: по транслиту «Rakhuba M. V.» не угадать, а владелец профиля известен
+    namesake = await people.create(PersonIn(fullName="Рахуба Мария Викторовна", kind="staff"), demo["user"])
     known = await s.create(s.template("publication") | {"title": "Уже в базе", "doi": "10.7777/known"}, demo["user"])
 
     async def orcid_dois(orcid: str) -> list[str]:
@@ -573,30 +575,114 @@ async def test_import_from_orcid(demo: dict, monkeypatch: pytest.MonkeyPatch) ->
         card = {"authors": ["Rakhuba M. V.", "Smith J."], "venue": "J. Comp. Phys.", "year": 2016}
         out = {"10.7777/a": card | {"title": "Tensor trains", "kind": "journal_article", "citations": 5}}
         out["10.7777/dup"] = card | {"title": "Уже в базе", "year": known["year"]}
+        out["10.7777/oa"] = card | {"title": "From OpenAlex"}
         return {d: out[d] for d in dois if d in out}
 
+    async def openalex_dois(orcid: str) -> list[str]:
+        return ["10.7777/a", "10.7777/oa"]  # OpenAlex знает статью, которой нет в профиле
+
     monkeypatch.setattr(crossref, "orcid_dois", orcid_dois)
+    monkeypatch.setattr(crossref, "openalex_dois", openalex_dois)
     monkeypatch.setattr(crossref, "lookup_many", lookup_many)
     res = await s.import_orcid(uuid.UUID(person["id"]), demo["user"])
     assert res == {
-        "found": 4,
-        "created": 2,
+        "found": 5,
+        "created": 3,
         "known": 1,
         "notFound": ["10.7777/gone"],
         "failed": [],
-        "message": "DOI в профиле ORCID: 4. Новых черновиков: 2, уже в базе: 1, нет в Crossref: 1.",
+        "message": "DOI в профиле ORCID: 4, ещё 1 нашёл OpenAlex. Новых черновиков: 3, уже в базе: 1, нет в Crossref: 1.",
     }
 
     card = await people.card(uuid.UUID(person["id"]))
-    titles = {w["title"]: w for w in card["works"]}  # «Rakhuba M. V.» сопоставлен по транслиту
-    assert set(titles) == {"Tensor trains", "Уже в базе"} and titles["Tensor trains"]["status"] == "draft"
+    titles = {w["title"]: w for w in card["works"]}  # «Rakhuba M. V.» — владелец профиля, хоть однофамилица и есть
+    assert set(titles) == {"Tensor trains", "Уже в базе", "From OpenAlex"}
+    assert titles["Tensor trains"]["status"] == "draft"
+    assert (await people.card(uuid.UUID(namesake["id"])))["works"] == []
     work = await s.get(uuid.UUID(titles["Tensor trains"]["id"]))
     assert work["doi"] == "10.7777/a" and work["fieldMeta"]["title"]["source"] == "doi" and work["citations"] == 5
-    dup = next(w for w in card["works"] if w["id"] != work["id"])
+    dup = titles["Уже в базе"]
     assert (await s.get(uuid.UUID(dup["id"])))["duplicateOf"] == known["id"]
 
     again = await s.import_orcid(uuid.UUID(person["id"]), demo["user"])
-    assert (again["created"], again["known"]) == (0, 3)
+    assert (again["created"], again["known"]) == (0, 4)
+
+    # пачка DOI текстом: ссылки doi.org, запятые, известные пропускаются
+    with pytest.raises(BadRequestError, match="ни одного DOI"):
+        await s.import_doi_list("тут нет DOI", demo["user"])
+    batch = await s.import_doi_list("https://doi.org/10.7777/A, 10.7777/known;\n10.7777/gone.", demo["user"])
+    assert (batch["found"], batch["created"], batch["known"], batch["notFound"]) == (3, 0, 2, ["10.7777/gone"])
+    assert batch["message"] == "DOI в списке: 3. Новых черновиков: 0, уже в базе: 2, нет в Crossref: 1."
+
+
+def test_isbn_checksum_and_open_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert crossref.normalize_isbn("ISBN 978-5-02-013850-6") == "9785020138506"
+    assert crossref.normalize_isbn("5-02-013850-9") == "5020138509"
+    assert crossref.normalize_isbn("0-8044-2957-X") == "080442957X"
+    with pytest.raises(BadRequestError, match="контрольным"):
+        crossref.normalize_isbn("978-5-02-013850-9")
+
+
+async def test_isbn_lookup_falls_back_to_open_library(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+
+    async def get(source: str, url: str, params: dict | None = None, headers: dict | None = None, *, follow=False):
+        calls.append((source, url.rsplit("/", 1)[-1], follow))
+        if source == "Crossref":
+            return {"message": {"items": []}}
+        if url.endswith(".json") and "isbn" in url:  # издание
+            return {
+                "title": "Тензорные поезда",
+                "subtitle": "теория и практика",
+                "publishers": ["Наука", "Другое"],
+                "publish_date": "March 2020",
+                "number_of_pages": 312,
+                "languages": [{"key": "/languages/rus"}],
+            }
+        return {"docs": [{"author_name": ["Иванов, Иван Петрович", "Ivan Oseledets"]}]}
+
+    monkeypatch.setattr(crossref, "_get", get)
+    got = await crossref.lookup_isbn("9785020138506")
+    assert calls == [
+        ("Crossref", "works", False),
+        ("Open Library", "9785020138506.json", True),
+        ("Open Library", "search.json", False),
+    ]
+    assert got == {
+        "title": "Тензорные поезда: теория и практика",
+        "authors": ["Иванов И. П.", "Oseledets I."],
+        "publisher": "Наука",
+        "year": 2020,
+        "pages": "312",
+        "kind": "monograph",
+        "language": "ru",
+    }
+
+
+async def test_fill_from_isbn(demo: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    s = works()
+
+    async def lookup_isbn(isbn: str) -> dict:
+        assert isbn == "9785020138506"
+        return {
+            "title": "Книга по ISBN",
+            "authors": ["Орлов Д. С."],
+            "publisher": "Наука",
+            "year": 2021,
+            "kind": "monograph",
+        }
+
+    monkeypatch.setattr(crossref, "lookup_isbn", lookup_isbn)
+    created = await s.create(s.template("publication"), demo["user"])
+    res = await s.fill_from_isbn(uuid.UUID(created["id"]), "978-5-02-013850-6", [], demo["user"])
+    w = res["work"]
+    assert (w["title"], w["publisher"], w["kind"], w["isbn"]) == (
+        "Книга по ISBN",
+        "Наука",
+        "monograph",
+        "9785020138506",
+    )
+    assert w["fieldMeta"]["publisher"] == {"source": "isbn"} and w["authors"][0]["personId"]
 
 
 def test_initials_fit() -> None:
@@ -660,3 +746,68 @@ async def test_seed_people_from_staff_csv(demo: dict, tmp_path) -> None:
         orlov = await uow.session.get(Person, demo["ids"]["p-s1"])
     assert len(rows) == 1 and rows[0].orcid == "0000-0001-6114-0435" and "Ноздрин В. С." in rows[0].aliases
     assert rows[0].department == "Факультет информационных технологий" and orlov.position == "Профессор"
+
+
+async def test_nightly_sync_updates_untouched_doi_fields(demo: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    from admin_service.src import sync
+
+    s = works()
+    card = {
+        "title": "Sync article",
+        "authors": ["Орлов Д. С."],
+        "venue": "Journal",
+        "year": 2026,
+        "kind": "journal_article",
+    }
+
+    async def lookup(doi: str) -> dict:
+        return dict(card, volume="1")
+
+    monkeypatch.setattr(crossref, "lookup", lookup)
+    created = await s.create(s.template("publication"), demo["user"])
+    work_id = uuid.UUID(created["id"])
+    await s.fill_from_doi(work_id, "10.8888/sync", [], demo["user"])
+    before = await s.get(work_id)
+    await s.patch(work_id, {"volume": "2", "updatedAt": before["updatedAt"]}, demo["user"])  # том поправил модератор
+
+    async def lookup_many(dois: list[str]) -> dict[str, dict]:
+        return {"10.8888/sync": dict(card, volume="9", issue="4", pages="10–20")} if "10.8888/sync" in dois else {}
+
+    monkeypatch.setattr(crossref, "lookup_many", lookup_many)
+    stats = await sync.refresh_dois(sync.service())
+    assert stats["updated"] == 1 and stats["errors"] == 0
+    w = await s.get(work_id)
+    assert (w["volume"], w["issue"], w["pages"]) == ("2", "4", "10–20")  # ручная правка цела, новое — из Crossref
+    assert w["fieldMeta"]["volume"]["source"] == "manual" and w["fieldMeta"]["issue"]["source"] == "doi"
+    stamp = w["updatedAt"]
+    assert (await sync.refresh_dois(sync.service()))["updated"] == 0  # второй проход ничего не меняет
+    assert (await s.get(work_id))["updatedAt"] == stamp
+
+
+async def test_openalex_pages_without_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    pages = []
+
+    async def get(source: str, url: str, params: dict | None = None, headers: dict | None = None, *, follow=False):
+        pages.append(params["page"])
+        if params["page"] == 3:
+            raise UpstreamError("OpenAlex ответил ошибкой")  # третья страница не пришла — собранное остаётся
+        return {
+            "results": [{"doi": f"https://doi.org/10.1/P{params['page']}-{i}"} for i in range(200)] + [{"doi": None}]
+        }
+
+    monkeypatch.setattr(crossref, "_get", get)
+    got = await crossref.openalex_dois("0000-0003-2071-2163")
+    assert pages == [1, 2, 3] and len(got) == 400 and got[0] == "10.1/p1-0"
+
+
+async def test_rate_limited_source_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    answers = [httpx.Response(429, headers={"Retry-After": "0"}), httpx.Response(200, json={"message": {"DOI": "x"}})]
+    sent = []
+
+    async def fake_get(self, url, params=None):
+        sent.append(url)
+        return answers[len(sent) - 1]
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    assert await crossref._get("Crossref", "https://api.crossref.org/works/x") == {"message": {"DOI": "x"}}
+    assert len(sent) == 2

@@ -14,10 +14,12 @@ from admin_service.src.service import doi as crossref
 from shared.auth.session import SessionUser
 from shared.config import UPLOAD_LIMITS
 from shared.db.base import now
-from shared.exceptions import BadRequestError, ConflictError, NotFoundError, UnprocessableError
+from shared.exceptions import BadRequestError, ConflictError, NotFoundError, UnprocessableError, UpstreamError
 from shared.logging import get_logger
+from shared.people import Person
+from shared.people.names import short_key
 from shared.refdata import Classifier
-from shared.repository.people_repository import PersonRepository, add_name, lock_names
+from shared.repository.people_repository import PersonRepository, add_name, initials_fit, lock_names
 from shared.repository.works_repository import WorkRepository, admin_options, matches
 from shared.storage import Storage, detect_type
 from shared.uow import UnitOfWork, UnitOfWorkFactory
@@ -28,7 +30,9 @@ from shared.works.schemas import RELATED, CommonIn, apply_write, comparable, par
 
 logger = get_logger(__name__)
 
+MAX_DOIS = 1000  # Crossref отвечает пачками по 50: 20 запросов, укладывается в таймаут nginx
 DOI_FIELDS = ("title", "authors", "venue", "year", "volume", "issue", "pages", "issn", "kind", "language", "indexing")
+ISBN_FIELDS = ("title", "authors", "year", "pages", "publisher", "kind", "language")
 CONTENT_TYPES = {"pdf": "application/pdf"}
 
 
@@ -444,10 +448,40 @@ class WorkService:
         self._audit_edit(work_id, changed, user, "doi")
         return {"work": await self.get(work_id), "conflicts": conflicts}
 
+    async def fill_from_isbn(self, work_id: UUID, raw: str, overwrite: list[str], user: SessionUser) -> dict:
+        """Как fill_from_doi, но для книги: Crossref (книги с DOI), иначе Open Library. Источник полей — isbn."""
+        isbn = crossref.normalize_isbn(raw)
+        async with self.uow_factory() as uow:
+            w = await self._load(uow, work_id)
+            if w.type != "publication":
+                raise BadRequestError("ISBN бывает только у публикаций")
+        incoming = await crossref.lookup_isbn(isbn)
+        async with self.uow_factory() as uow:
+            w = await self._load(uow, work_id)
+            changed, conflicts, by_orcid = await self._apply_doi(uow, w, isbn, incoming, overwrite, by="isbn")
+            if by_orcid:
+                await self._link_known(uow, user)
+        self._audit_edit(work_id, changed, user, "isbn")
+        return {"work": await self.get(work_id), "conflicts": conflicts}
+
     async def _apply_doi(
-        self, uow: UnitOfWork, w: Work, doi: str, incoming: dict[str, Any], overwrite: list[str]
+        self,
+        uow: UnitOfWork,
+        w: Work,
+        doi: str,
+        incoming: dict[str, Any],
+        overwrite: list[str],
+        owner: Person | None = None,
+        *,
+        by: str = "doi",
     ) -> tuple[list[str], list[dict], bool]:
-        """Поля из Crossref в работу. → изменённые поля, конфликты, был ли у авторов ORCID."""
+        """Поля из Crossref в работу. → изменённые поля, конфликты, был ли у авторов ORCID.
+
+        owner — человек, из чьего профиля пришла статья (импорт из ORCID): он точно среди авторов, поэтому
+        его написание («Oseledets I. V.») привязывается к нему, даже если однофамильцев с такими инициалами несколько.
+        Ничего не изменилось — работа не сохраняется: ночное обновление не трогает updated_at зря.
+        by="isbn" — то же для книги по ISBN: свой набор полей и источник isbn.
+        """
         conflicts = []
         orcids = incoming.pop("author_orcids", None) or []
         citations = incoming.pop("citations", None)
@@ -457,33 +491,52 @@ class WorkService:
             names = incoming["authors"]
             orcids += [None] * (len(names) - len(orcids))
             incoming["authors"] = [await self._ref_to(uow, n, orcid) for n, orcid in zip(names, orcids, strict=True)]
+            if owner:
+                await self._link_owner(uow, owner, incoming["authors"])
         current = work_dict(w)
-        changes: dict[str, Any] = {"doi": doi}
-        for key in DOI_FIELDS:
-            if key not in incoming:
+        changes: dict[str, Any] = {by: doi}
+        for key in ISBN_FIELDS if by == "isbn" else DOI_FIELDS:
+            if key not in incoming or same(current[key], incoming[key]):
                 continue
-            if not _no_authors(current[key]) and key in w.field_meta:
-                if same(current[key], incoming[key]):
-                    continue
-                if key not in overwrite:
-                    conflicts.append(
-                        {
-                            "field": key,
-                            "label": L.FIELD.get(key, key),
-                            "current": _shown(current[key]),
-                            "incoming": _shown(incoming[key]),
-                        }
-                    )
-                    continue
+            if not _no_authors(current[key]) and key in w.field_meta and key not in overwrite:
+                conflicts.append(
+                    {
+                        "field": key,
+                        "label": L.FIELD.get(key, key),
+                        "current": _shown(current[key]),
+                        "incoming": _shown(incoming[key]),
+                    }
+                )
+                continue
             changes[key] = incoming[key]
-        changed = await self._save(
-            uow, w, parse_write("publication", changes), parse_write("publication", current), source="doi"
-        )
+        changed = []
+        if set(changes) != {by} or current[by] != doi:
+            changed = await self._save(
+                uow, w, parse_write("publication", changes), parse_write("publication", current), source=by
+            )
         if citations is not None:  # ночная команда citations потом обновит и добавит OpenAlex
             await self.works.save_citations(uow, [(w.id, "crossref", citations)])
         return changed, conflicts, any(orcids)
 
-    async def _link_known(self, uow: UnitOfWork, user: SessionUser) -> None:
+    async def _link_owner(self, uow: UnitOfWork, owner: Person, authors: list[dict]) -> None:
+        """Владелец профиля среди авторов: единственное написание, похожее на его ФИО (фамилия по транслиту и
+        инициалы), — его, а написание запоминается вариантом имени."""
+        if any(a["personId"] == str(owner.id) for a in authors):
+            return
+        keys = {short_key(owner.full_name), *(n.short_key for n in owner.names)}
+        fits = [
+            a
+            for a in authors
+            if not a["personId"]
+            and short_key(a["displayName"]) in keys
+            and initials_fit(a["displayName"], owner.full_name)
+        ]
+        if len(fits) == 1:
+            await lock_names(uow)
+            add_name(owner, fits[0]["displayName"])
+            fits[0] |= {"personId": str(owner.id), "kind": owner.kind}
+
+    async def _link_known(self, uow: UnitOfWork, user: SessionUser | None) -> None:
         linked = await self.people.link_known(uow)
         await self.works.refresh_search(uow, {i for _, _, ids in linked for i in ids})
         for p, name, ids in linked:
@@ -495,16 +548,16 @@ class WorkService:
                     "person_id": str(p.id),
                     "display_name": name,
                     "works": len(ids),
-                    "by": str(user.id),
+                    "by": str(user.id) if user else "sync",
                 },
             )
 
-    async def import_orcid(self, person_id: UUID, user: SessionUser) -> dict:
-        """Работы с DOI из публичного профиля ORCID человека → черновики публикаций, заполненные по Crossref.
+    async def import_orcid(self, person_id: UUID, user: SessionUser | None) -> dict:
+        """Работы человека с DOI → черновики публикаций, заполненные по Crossref.
 
-        Уже известные DOI пропускаются (кроме отклонённых работ), совпавшие по названию и году — черновики-дубли.
-        Авторы сопоставляются как при заполнении по DOI, а в конце — link_known: «Oseledets I. V.» найдёт
-        «Оселедец Иван Валерьевич» по транслиту, если однофамилец с такими инициалами один.
+        DOI — из публичного профиля ORCID и из OpenAlex по тому же ORCID: OpenAlex сам находит статьи автора,
+        которые тот не внёс в профиль. OpenAlex не ответил — импорт идёт по одному ORCID.
+        user None — ночная команда sync.
         """
         async with self.uow_factory() as uow:
             p = await self.people.resolve(uow, person_id)
@@ -512,8 +565,27 @@ class WorkService:
                 raise NotFoundError("Человек не найден")
             if not p.orcid:
                 raise BadRequestError("У человека не указан ORCID", code="no_orcid")
-            orcid = p.orcid
-        dois = await crossref.orcid_dois(orcid)
+            orcid, owner_id = p.orcid, p.id
+        from_orcid = await crossref.orcid_dois(orcid)
+        try:
+            from_openalex = await crossref.openalex_dois(orcid)
+        except UpstreamError:  # причина уже в логе
+            from_openalex = []
+        dois = list(dict.fromkeys([*from_orcid, *from_openalex]))
+        res = await self.import_dois(dois, user, owner_id=owner_id, source="orcid")
+        extra = len(dois) - len(from_orcid)
+        where = f"DOI в профиле ORCID: {len(from_orcid)}" + (f", ещё {extra} нашёл OpenAlex" if extra else "")
+        return res | {"message": f"{where}. {res['message']}"}
+
+    async def import_dois(
+        self, dois: list[str], user: SessionUser | None, *, owner_id: UUID | None = None, source: str = "doi_list"
+    ) -> dict:
+        """DOI → черновики публикаций, заполненные по Crossref пачками.
+
+        Уже известные DOI пропускаются (кроме отклонённых работ), совпавшие по названию и году — черновики-дубли.
+        Авторы сопоставляются как при заполнении по DOI, владелец профиля (owner_id) — по написанию,
+        а в конце — link_known: «Oseledets I. V.» найдёт «Оселедец Иван Валерьевич» по транслиту.
+        """
         async with self.uow_factory() as uow:
             known = set(
                 await uow.session.scalars(
@@ -525,7 +597,7 @@ class WorkService:
         for doi, incoming in found.items():
             w = Work(
                 id=uuid.uuid7(), type="publication", status="draft", details={}, field_meta={}, keywords=[],
-                created_by=user.id,
+                created_by=user.id if user else None,
             )  # fmt: skip
             try:
                 async with self.uow_factory() as uow:
@@ -534,33 +606,34 @@ class WorkService:
                         uow, w, parse_write("publication", blank_card), parse_write("publication", blank_card)
                     )
                     w = await self._load(uow, w.id)  # со связями: work_dict в _apply_doi читает авторов
-                    await self._apply_doi(uow, w, doi, incoming, [])
+                    owner = await self.people.get(uow, owner_id) if owner_id else None
+                    await self._apply_doi(uow, w, doi, incoming, [], owner)
                     if dup := await self.works.find_duplicate(uow, "publication", w.title, w.year, exclude=w.id):
                         w.duplicate_of = dup.id
             # одна кривая запись не роняет остальные
             except (BadRequestError, UnprocessableError, ValidationError) as e:
-                logger.warning("Работа из ORCID не создана", extra={"doi": doi, "error": repr(e)})
+                logger.warning("Работа по DOI не создана", extra={"doi": doi, "error": repr(e)})
                 failed.append(doi)
                 continue
             created.append(w.id)
         if created:
             async with self.uow_factory() as uow:
                 await self._link_known(uow, user)
+        not_found = [d for d in dois if d not in known and d not in found]
         logger.info(
-            "Импорт из ORCID",
+            "Импорт по DOI",
             extra={
                 "audit": True,
-                "person_id": str(person_id),
-                "orcid": orcid,
+                "source": source,
+                "person_id": str(owner_id) if owner_id else None,
                 "dois": len(dois),
                 "drafts": len(created),  # не «created»: так называется поле LogRecord
                 "known": len(known),
-                "not_found": len(dois) - len(known) - len(found),
+                "not_found": len(not_found),
                 "failed": len(failed),
-                "by": str(user.id),
+                "by": str(user.id) if user else "sync",
             },
         )
-        not_found = [d for d in dois if d not in known and d not in found]
         parts = [f"Новых черновиков: {len(created)}", f"уже в базе: {len(known)}"]
         parts += [f"нет в Crossref: {len(not_found)}"] * bool(not_found) + [f"с ошибкой: {len(failed)}"] * bool(failed)
         return {
@@ -569,8 +642,18 @@ class WorkService:
             "known": len(known),
             "notFound": not_found,
             "failed": failed,
-            "message": f"DOI в профиле ORCID: {len(dois)}. " + ", ".join(parts) + ".",
+            "message": ", ".join(parts) + ".",
         }
+
+    async def import_doi_list(self, text: str, user: SessionUser) -> dict:
+        """Пачка DOI текстом — через пробелы, запятые, строки, ссылками doi.org: DOI ищутся в тексте."""
+        dois = list(dict.fromkeys(m.rstrip(".,;)") for m in crossref.DOI_RE.findall(text.lower())))
+        if not dois:
+            raise BadRequestError("В тексте нет ни одного DOI (10.xxxx/...)", code="doi")
+        if len(dois) > MAX_DOIS:
+            raise BadRequestError(f"За один раз — не больше {MAX_DOIS} DOI", code="doi")
+        res = await self.import_dois(dois, user)
+        return res | {"message": f"DOI в списке: {len(dois)}. {res['message']}"}
 
     async def _ref_to(self, uow: UnitOfWork, name: str, orcid: str | None = None, fallback: str = "external") -> dict:
         """Автор из Crossref: сначала по ORCID, потом по точному написанию.

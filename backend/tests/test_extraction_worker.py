@@ -3,6 +3,7 @@
 import asyncio
 import io
 import json
+import uuid
 from pathlib import Path
 from uuid import uuid4
 
@@ -333,3 +334,54 @@ def test_keywords_list_continues_on_lowercase_line() -> None:
         "градиентный бустинг",
         "классификация",
     ]
+
+
+async def test_text_record_by_llm_with_confidence() -> None:
+    answer = {
+        "authors": ["Орлов Д. С.", "Выдуманный А. А."],
+        "title": "Графовые сети",
+        "kind": "Статья в журнале",
+        "venue": "Вестник",
+        "year": "2025",
+        "volume": None,
+        "issue": "1",
+        "pages": "1–9",
+        "publisher": None,
+        "doi": None,
+        "issn_isbn": None,
+    }
+    seen = {}
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(answer, ensure_ascii=False)}}]})
+
+    text = "Орлов Д. С. Графовые сети // Вестник. 2025. № 1. С. 1–9."
+    async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+        fields, meta = await extract_module.extract_record(text, "publication", http, {})
+    schema = seen["body"]["response_format"]["json_schema"]["schema"]
+    assert set(schema["required"]) == set(answer)  # все поля обязательны, как у карточки ВКР
+    assert fields["record"] == {
+        "Авторы": "Орлов Д. С.; Выдуманный А. А.",
+        "Название": "Графовые сети",
+        "Вид": "Статья в журнале",
+        "Журнал/сборник": "Вестник",
+        "Год": "2025",
+        "Номер": "1",
+        "Страницы": "1–9",
+    }
+    assert meta["Название"]["confidence"] == extract_module.IN_TEXT
+    assert meta["Авторы"]["confidence"] == extract_module.GUESSED  # второго автора в записи нет
+    assert meta["Вид"]["confidence"] == extract_module.GUESSED
+
+
+async def test_handler_routes_text_items_to_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def record(text: str, work_type: str, http, log: dict) -> tuple[dict, dict]:
+        return {"record": {"Название": text}}, {}
+
+    monkeypatch.setattr(extraction_service, "extract_record", record)
+    storage, publisher = FakeStorage(), FakePublisher()
+    handler = extraction_service.ExtractionHandler(storage, publisher, None)
+    dto = ItemCreatedDTO(item_id=uuid.uuid4(), work_type="publication", text="Запись")
+    await handler(dto, Delivery(False, 0, 0))
+    assert publisher.published[0][1].fields == {"record": {"Название": "Запись"}}

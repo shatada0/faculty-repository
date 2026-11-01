@@ -399,3 +399,159 @@ def test_routes_need_role() -> None:
 
 async def test_anonymous_gets_401_everywhere() -> None:
     await anonymous_everywhere(import_app, [import_router])
+
+
+SCOPUS_BIB = r"""
+@ARTICLE{Oseledets2011,
+  author = {Oseledets, I. V. and Tyrtyshnikov, {E. E.}},
+  title = {{Tensor-Train} Decomposition},
+  journal = {SIAM Journal on Scientific Computing},
+  year = {2011},
+  volume = {33},
+  number = {5},
+  pages = {2295--2317},
+  doi = {10.1137/090752286},
+  url = {https://www.scopus.com/inward/record.uri?eid=2-s2.0-1},
+  publisher = "SIAM",
+  source = {Scopus},
+}
+@comment{пропускается}
+@book{Ivanov2020, author = {Иванов, Иван Петрович}, title = {Базы данных \& SQL}, publisher = {Наука}, year = 2020}
+"""
+
+WOS_RIS = """TY  - JOUR
+AU  - Rakhuba, Maxim
+AU  - Oseledets, Ivan V.
+TI  - Fast multidimensional convolution
+T2  - JOURNAL OF COMPUTATIONAL PHYSICS
+PY  - 2016
+VL  - 304
+SP  - 167
+EP  - 175
+DO  - 10.1016/j.jcp.2015.10.015
+AN  - WOS:000365030700011
+ER  -
+
+TY  - CPAPER
+AU  - Smith, John
+TI  - Zotero paper
+BT  - Proceedings of Something
+PY  - 2024/05/01
+ER  -
+"""
+
+
+def test_bibtex_and_ris_become_template_rows() -> None:
+    from shared.imports.bibliography import parse_bibtex, parse_ris
+
+    article, book = parse_bibtex(SCOPUS_BIB)
+    assert article["Авторы"] == "Oseledets I. V.; Tyrtyshnikov E. E."
+    assert (article["Название"], article["Вид"], article["Страницы"]) == (
+        "Tensor-Train Decomposition",
+        "journal_article",
+        "2295–2317",
+    )
+    assert (article["Журнал/сборник"], article["Номер"], article["DOI"], article["Индексация"]) == (
+        "SIAM Journal on Scientific Computing",
+        "5",
+        "10.1137/090752286",
+        "Scopus",
+    )
+    assert article["Издательство"] == "SIAM"
+    assert (book["Авторы"], book["Название"], book["Вид"], book["Год"]) == (
+        "Иванов И. П.",
+        "Базы данных & SQL",
+        "monograph",
+        "2020",
+    )
+
+    wos, zotero = parse_ris(WOS_RIS)
+    assert wos["Авторы"] == "Rakhuba M.; Oseledets I. V." and wos["Страницы"] == "167–175"
+    assert (wos["Журнал/сборник"], wos["Индексация"], wos["Вид"]) == (
+        "JOURNAL OF COMPUTATIONAL PHYSICS",
+        "WoS",
+        "journal_article",
+    )
+    assert (zotero["Вид"], zotero["Журнал/сборник"], zotero["Год"], zotero["Индексация"]) == (
+        "proceedings_paper",
+        "Proceedings of Something",
+        "2024",
+        "",
+    )
+
+
+async def test_bibliography_import_makes_drafts(demo: dict) -> None:
+    service = ImportService(
+        uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), relay(FakePublisher())
+    )
+    with pytest.raises(BadRequestError, match="как публикации"):
+        await service.create("table", "talk", [_upload("talks.bib", SCOPUS_BIB.encode())], None, demo["user"])
+    preview = await service.preview("publication", _upload("scopus.bib", SCOPUS_BIB.encode()))
+    assert (preview["total"], preview["bad"], preview["missingColumns"]) == (2, 0, [])  # монографии журнал не нужен
+    imp = await service.create("table", "publication", [_upload("scopus.bib", SCOPUS_BIB.encode())], None, demo["user"])
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    assert [i["ref"] for i in detail["items"]] == ["Запись 1", "Запись 2"]
+    assert [i["status"] for i in detail["items"]] == ["filled", "filled"]
+    work = await works().get(uuid.UUID(detail["items"][0]["workId"]))
+    assert work["indexing"] == ["scopus"] and work["fieldMeta"]["title"] == {"source": "bibliography"}
+    book = await works().get(uuid.UUID(detail["items"][1]["workId"]))
+    assert (book["kind"], book["publisher"], book["errors"]) == ("monograph", "Наука", [])
+
+
+def test_text_list_split_into_entries() -> None:
+    elibrary = (
+        "1. НЕЙРОННЫЕ СЕТИ ДЛЯ ГРАФОВ\nОрлов Д.С., Белова Н.В.\nВестник университета. 2024. Т. 3. № 2. С. 10-20.\n"
+        "2. ВТОРАЯ СТАТЬЯ\nОрлов Д.С.\nСборник трудов. 2023. С. 5-6.\n"
+    )
+    assert records.split_entries(elibrary) == [
+        "НЕЙРОННЫЕ СЕТИ ДЛЯ ГРАФОВ Орлов Д.С., Белова Н.В. Вестник университета. 2024. Т. 3. № 2. С. 10-20.",
+        "ВТОРАЯ СТАТЬЯ Орлов Д.С. Сборник трудов. 2023. С. 5-6.",
+    ]
+    assert records.split_entries("Первая\nзапись\n\nВторая запись\n") == ["Первая запись", "Вторая запись"]
+    assert records.split_entries("Одна\nДругая\n  \n") == ["Одна", "Другая"]
+    assert records.split_entries("   ") == [] and records.split_entries('" "\n—') == []
+
+
+async def test_text_list_import_goes_through_ai(demo: dict) -> None:
+    publisher = FakePublisher()
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), relay(publisher))
+    with pytest.raises(BadRequestError, match="ни одной записи"):
+        await service.create("text", "publication", [], None, demo["user"], " \n ")
+    text = "1. Орлов Д. С. Графовые сети для каталога // Вестник. 2025. № 1. С. 1–9.\n2. Запись, которую ИИ не разберёт"
+    imp = await service.create("text", "publication", [], None, demo["user"], text)
+    assert imp["fileName"] == "Список текстом: 2 записи" and imp["status"] == "processing"
+    assert await service.outbox.flush()
+    sent_dtos = [p for _, p in publisher.published]
+    assert [d["text"] for d in sent_dtos] == [
+        "Орлов Д. С. Графовые сети для каталога // Вестник. 2025. № 1. С. 1–9.",
+        "Запись, которую ИИ не разберёт",
+    ]
+    assert all(d["file_key"] is None for d in sent_dtos)
+
+    first, second = (uuid.UUID(d["item_id"]) for d in sent_dtos)
+    record = {
+        "Авторы": "Орлов Д. С.",
+        "Название": "Графовые сети для каталога",
+        "Вид": "Статья в журнале",
+        "Журнал/сборник": "Вестник",
+        "Год": "2025",
+        "Номер": "1",
+        "Страницы": "1–9",
+    }
+    meta = {c: {"source": "ai", "confidence": 0.85} for c in record} | {"Вид": {"source": "ai", "confidence": 0.4}}
+    await service.on_extracted(ItemExtractedDTO(item_id=first, fields={"record": record}, field_meta=meta), DELIVERY)
+    await service.on_extracted(
+        ItemExtractedDTO(item_id=second, fields={"record": {"Название": "Только название"}}, field_meta={}), DELIVERY
+    )
+    detail = await service.get(uuid.UUID(imp["id"]), None)
+    assert detail["import"]["status"] == "done"
+    assert [i["status"] for i in detail["items"]] == ["filled", "error"]
+    assert detail["items"][1]["error"].startswith("Не указан")
+    work = await works().get(uuid.UUID(detail["items"][0]["workId"]))
+    assert (work["status"], work["kind"], work["venue"], work["issue"]) == ("draft", "journal_article", "Вестник", "1")
+    assert work["authors"][0]["personId"] == str(demo["ids"]["p-s1"])  # Орлов из базы
+    assert work["fieldMeta"]["title"] == {"source": "ai", "confidence": 0.85}
+    assert work["fieldMeta"]["kind"]["confidence"] == 0.4 and work["fieldMeta"]["kind"]["lowConfidence"]
+
+    detail = await service.retry(uuid.UUID(imp["id"]))  # ошибка записи текстом — снова воркеру, с тем же текстом
+    assert await service.outbox.flush() and publisher.published[-1][1]["text"] == "Запись, которую ИИ не разберёт"

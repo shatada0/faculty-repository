@@ -485,11 +485,44 @@ export function fillFromDoi(w: AdminWork, raw: string, overwrite: string[]): Doi
   if (!/^10\.\d{4,9}\/\S+$/.test(doi)) throw new DoiError(400, 'Введите DOI в формате 10.xxxx/...')
   const d = KNOWN_DOIS[doi]
   if (!d) throw new DoiError(404, 'DOI не найден')
-  const pub: Record<string, unknown> = { ...d, authors: d.authors.map((n) => refTo(n)) }
+  return fillFields(w, 'doi', doi, { ...d, authors: d.authors.map((n) => refTo(n)) }, DOI_FIELDS, overwrite)
+}
+
+// Offline there is no Crossref or Open Library: one demo book answers, like the demo DOIs.
+const KNOWN_ISBNS: Record<string, Record<string, unknown>> = {
+  '9785020138506': { title: 'Базы данных: учебное пособие', authors: ['Орлов Д. С.'], publisher: 'Издательство университета', year: 2021, pages: '212', kind: 'textbook', language: 'ru' },
+}
+
+export function fillFromIsbn(w: AdminWork, raw: string, overwrite: string[]): DoiConflict[] {
+  const isbn = raw.toUpperCase().replace(/[^0-9X]/g, '')
+  if (isbn.length !== 10 && isbn.length !== 13) throw new DoiError(400, 'ISBN с ошибкой: нужно 10 или 13 цифр с верным контрольным знаком')
+  const d = KNOWN_ISBNS[isbn]
+  if (!d) throw new DoiError(404, 'ISBN не найден ни в Crossref, ни в Open Library. Для демо: 978-5-02-013850-6')
+  return fillFields(w, 'isbn', isbn, { ...d, authors: (d.authors as string[]).map((n) => refTo(n)) }, ['title', 'authors', 'year', 'pages', 'publisher', 'kind', 'language'], overwrite)
+}
+
+/** DOIs pasted as text → drafts filled from the demo DOIs; known DOIs are skipped. */
+export function importDoiList(text: string, user: string) {
+  const dois = [...new Set((text.toLowerCase().match(/10\.\d{4,9}\/[^\s,;]+/g) ?? []).map((d) => d.replace(/[.,;)]+$/, '')))]
+  if (!dois.length) throw new DoiError(400, 'В тексте нет ни одного DOI (10.xxxx/...)')
+  const known = dois.filter((d) => db.works.some((w) => w.type === 'publication' && w.status !== 'rejected' && w.doi?.toLowerCase() === d))
+  const fresh = dois.filter((d) => !known.includes(d) && KNOWN_DOIS[d])
+  for (const doi of fresh) {
+    const w = { type: 'publication', keywords: [], language: 'ru', hasFile: false, fieldMeta: {}, id: `pub-${++db.seq}`, status: 'draft', createdAt: now(), updatedAt: now(), createdBy: user } as unknown as AdminWork
+    applyEdit(w, template('publication'), template('publication'))
+    fillFromDoi(w, doi, [])
+    db.works.push(w)
+  }
+  const notFound = dois.filter((d) => !known.includes(d) && !KNOWN_DOIS[d])
+  const parts = [`Новых черновиков: ${fresh.length}`, `уже в базе: ${known.length}`, ...(notFound.length ? [`нет в Crossref: ${notFound.length}`] : [])]
+  return { found: dois.length, created: fresh.length, known: known.length, notFound, failed: [], message: `DOI в списке: ${dois.length}. ${parts.join(', ')}.` }
+}
+
+function fillFields(w: AdminWork, by: 'doi' | 'isbn', value: string, pub: Record<string, unknown>, fields: string[], overwrite: string[]): DoiConflict[] {
   const rec = w as unknown as Record<string, unknown>
   const conflicts: DoiConflict[] = []
-  rec.doi = doi
-  for (const k of DOI_FIELDS) {
+  rec[by] = value
+  for (const k of fields) {
     if (pub[k] === undefined) continue
     if (!isEmpty(rec[k]) && w.fieldMeta[k]) {
       if (same(rec[k], pub[k])) continue
@@ -499,7 +532,7 @@ export function fillFromDoi(w: AdminWork, raw: string, overwrite: string[]): Doi
       }
     }
     rec[k] = pub[k]
-    w.fieldMeta[k] = { source: 'doi' }
+    w.fieldMeta[k] = { source: by }
   }
   w.updatedAt = new Date().toISOString()
   return conflicts
@@ -508,7 +541,7 @@ export function fillFromDoi(w: AdminWork, raw: string, overwrite: string[]): Doi
 const MB = 1024 * 1024
 export const UPLOAD_LIMITS: UploadLimits = {
   archive: { accept: ['.zip', '.pdf'], maxBytes: 500 * MB },
-  table: { accept: ['.xlsx', '.csv'], maxBytes: 10 * MB },
+  table: { accept: ['.xlsx', '.csv'], maxBytes: 10 * MB }, // the server also takes .bib and .ris; the mocks don't parse them
   workFile: { accept: ['.pdf', '.pptx', '.docx'], maxBytes: 100 * MB },
   material: { accept: ['.pdf', '.pptx', '.docx', '.zip'], maxBytes: 50 * MB },
 }
@@ -784,9 +817,29 @@ export async function previewTable(file: File, type: WorkType): Promise<ImportPr
   }
 }
 
+/** The server's split: numbered «1. …» entries, else paragraphs, else lines. */
+export function splitEntries(text: string): string[] {
+  text = text.replace(/\r\n/g, '\n').trim()
+  const numbered = /^\s*\d{1,4}\s*[.)]\s+/gm
+  const parts = (text.match(numbered) ?? []).length >= 2 ? text.split(numbered) : /\n\s*\n/.test(text) ? text.split(/\n\s*\n/) : text.split('\n')
+  return parts.map((p) => p.split(/\s+/).join(' ').trim()).filter((p) => /[\p{L}\p{N}]/u.test(p))
+}
+
+/** Offline stand-in for the LLM: «Иванов И. И., Петров П. П. Название // Журнал. 2024. № 2. С. 1–9.» */
+function guessRecord(type: 'publication' | 'talk', entry: string): Record<string, string> {
+  const names = entry.match(/[А-ЯЁA-Z][а-яёa-z-]+\s+[А-ЯЁA-Z]\.\s?(?:[А-ЯЁA-Z]\.)?/g) ?? []
+  const rest = names.reduce((s, n) => s.replace(n, ''), entry).replace(/^[\s,]+/, '')
+  const [title = '', where = ''] = rest.split('//').map((s) => s.trim())
+  const year = entry.match(/\b(19|20)\d{2}\b/)?.[0] ?? ''
+  const venue = where.split('.')[0]?.trim() ?? ''
+  if (type === 'publication') return { 'Авторы': names.join('; '), 'Название': title.replace(/[.\s]+$/, ''), 'Вид': 'Статья в журнале', 'Журнал/сборник': venue, 'Год': year }
+  return { 'Докладчики': names.join('; '), 'Название доклада': title.replace(/[.\s]+$/, ''), 'Конференция': venue, 'Уровень': 'национальный', 'Дата начала': year ? `01.01.${year}` : '' }
+}
+
 export async function createImport(form: FormData, user: string): Promise<MockImport> {
-  const kind = form.get('kind') as 'archive' | 'table'
+  const kind = form.get('kind') as 'archive' | 'table' | 'text'
   const workType = form.get('workType') as WorkType
+  if (kind === 'text') return createTextImport(String(form.get('text') ?? ''), workType as 'publication' | 'talk', user)
   const uploads = form.getAll('file') as File[] // archive: any number of PDFs and ZIPs
   const file = uploads[0] ?? null
   const metaTable = form.get('metaTable') as File | null
@@ -835,22 +888,38 @@ export async function createImport(form: FormData, user: string): Promise<MockIm
     const rows = await readTable(file)
     const missing = missingColumns(rows[0] ?? [], type)
     if (missing.length) throw new ImportError(`В таблице нет обязательных колонок: ${missing.join(', ')}. Скачайте шаблон.`)
-    toRecords(rows, type).forEach((rec, i) => {
-      const ref = `Строка ${i + 2}`
-      const miss = missingInRow(rec, type)
-      if (miss.length) {
-        const error = miss.includes('Год') ? 'Не указан год' : miss.includes('Дата начала') ? 'Не указана дата начала' : `Не заполнено: ${miss.join(', ')}`
-        imp.items.push({ ref, title: rec['Название'] || rec['Название доклада'] || undefined, status: 'error', error })
-        return
-      }
-      const { w, unmatched: un } = tableRecordToWork(type, rec, id)
-      const dup = findDuplicate(type, w.title, w.year)
-      if (dup) w.duplicateOf = dup.id
-      db.works.push(w)
-      imp.items.push({ ref, title: w.title, status: dup ? 'duplicate' : 'filled', workId: w.id, duplicateOf: dup?.id, unmatchedAuthors: un.length ? un : undefined })
-    })
+    toRecords(rows, type).forEach((rec, i) => addRow(imp, type, rec, `Строка ${i + 2}`))
     imp.status = 'done'
   }
+  imp.stats = stats(imp.items)
+  db.imports.unshift(imp)
+  return imp
+}
+
+function addRow(imp: MockImport, type: 'publication' | 'talk', rec: Record<string, string>, ref: string, source?: FieldMeta) {
+  const miss = missingInRow(rec, type)
+  if (miss.length) {
+    const error = miss.includes('Год') ? 'Не указан год' : miss.includes('Дата начала') ? 'Не указана дата начала' : `Не заполнено: ${miss.join(', ')}`
+    imp.items.push({ ref, title: rec['Название'] || rec['Название доклада'] || undefined, status: 'error', error })
+    return
+  }
+  const { w, unmatched: un } = tableRecordToWork(type, rec, imp.id)
+  if (source) for (const k of Object.keys(w.fieldMeta)) w.fieldMeta[k] = { ...source }
+  const dup = findDuplicate(type, w.title, w.year)
+  if (dup) w.duplicateOf = dup.id
+  db.works.push(w)
+  imp.items.push({ ref, title: w.title, status: dup ? 'duplicate' : 'filled', workId: w.id, duplicateOf: dup?.id, unmatchedAuthors: un.length ? un : undefined })
+}
+
+function createTextImport(text: string, type: 'publication' | 'talk', user: string): MockImport {
+  const entries = splitEntries(text)
+  if (!entries.length) throw new ImportError('В тексте нет ни одной записи')
+  const imp: MockImport = {
+    id: `imp-${++db.seq}`, kind: 'text', workType: type, fileName: `Список текстом: ${entries.length}`, status: 'done',
+    createdAt: now(), createdBy: user, items: [], stats: stats([]),
+  }
+  const ai = { source: 'ai' as const, confidence: 0.85 }
+  entries.forEach((e) => addRow(imp, type, guessRecord(type, e), e.length > 120 ? e.slice(0, 119) + '…' : e, ai))
   imp.stats = stats(imp.items)
   db.imports.unshift(imp)
   return imp

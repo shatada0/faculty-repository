@@ -7,7 +7,7 @@ import re
 import shutil
 import sys
 import time
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import httpx
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
@@ -17,6 +17,7 @@ from extraction_worker.src.service.pdf_text import PASSWORD_EXIT
 from shared.config import llm_config
 from shared.logging import get_logger
 from shared.people.names import parse_name, translit
+from shared.works.labels import CONF_LEVEL, PUB_KIND
 
 logger = get_logger(__name__)
 
@@ -60,7 +61,82 @@ class ExtractedCard(BaseModel):
 
 # Все поля обязательные (значения — null или []): иначе грамматика Ollama даёт модели закрыть объект после
 # первого поля, и GigaChat возвращал одно название. Разбор ответа при этом прощает пропуски — по умолчаниям модели.
-CARD_SCHEMA = ExtractedCard.model_json_schema() | {"required": list(ExtractedCard.model_fields)}
+
+Short = Annotated[str | None, cut(300)]
+
+
+class PublicationRecord(BaseModel):
+    """Запись списка публикаций → колонки шаблона «Публикации» (COLUMNS ниже)."""
+
+    authors: Annotated[list[Name], cut(30)] = Field(default_factory=list, max_length=30)
+    title: Annotated[str | None, cut(500)] = Field(None, max_length=500)
+    kind: Literal[*PUB_KIND.values()] | None = None  # type: ignore[valid-type]
+    venue: Short = None
+    year: Short = None
+    volume: Short = None
+    issue: Short = None
+    pages: Short = None
+    publisher: Short = None
+    doi: Short = None
+    issn_isbn: Short = None
+
+
+class TalkRecord(BaseModel):
+    """Запись программы конференции или списка докладов → колонки шаблона «Доклады»."""
+
+    presenters: Annotated[list[Name], cut(10)] = Field(default_factory=list, max_length=10)
+    coauthors: Annotated[list[Name], cut(20)] = Field(default_factory=list, max_length=20)
+    title: Annotated[str | None, cut(500)] = Field(None, max_length=500)
+    event: Short = None
+    level: Literal[*CONF_LEVEL.values()] | None = None  # type: ignore[valid-type]
+    city: Short = None
+    country: Short = None
+    date_start: Short = None
+    date_end: Short = None
+
+
+COLUMNS = {
+    "publication": {
+        "authors": "Авторы",
+        "title": "Название",
+        "kind": "Вид",
+        "venue": "Журнал/сборник",
+        "year": "Год",
+        "volume": "Том",
+        "issue": "Номер",
+        "pages": "Страницы",
+        "publisher": "Издательство",
+        "doi": "DOI",
+        "issn_isbn": "ISSN/ISBN",
+    },
+    "talk": {
+        "presenters": "Докладчики",
+        "coauthors": "Соавторы",
+        "title": "Название доклада",
+        "event": "Конференция",
+        "level": "Уровень",
+        "city": "Город",
+        "country": "Страна",
+        "date_start": "Дата начала",
+        "date_end": "Дата окончания",
+    },
+}
+NAME_FIELDS = {"authors", "presenters", "coauthors"}
+RECORD_PROMPT = {
+    "publication": """Ты разбираешь одну библиографическую запись публикации (ГОСТ, APA, список из eLIBRARY или отчёта).
+Верни только JSON по схеме. Значения бери из записи дословно, ничего не придумывай; чего нет — null или пустой список.
+- authors: каждый автор отдельно, как в записи («Иванов И. И.», «I. I. Ivanov»);
+- title: название работы без кавычек и без авторов;
+- kind: вид публикации — статья в журнале, статья в сборнике (труды конференции), тезисы, глава в книге, монография, учебное пособие;
+- venue: журнал или сборник (для монографии — null); year: год; volume: том; issue: номер выпуска;
+- pages: страницы («12–18») или число страниц книги; publisher: издательство; doi: DOI без https://doi.org/;
+- issn_isbn: ISSN или ISBN, если есть.""",
+    "talk": """Ты разбираешь одну запись программы конференции или списка докладов.
+Верни только JSON по схеме. Значения бери из записи дословно, ничего не придумывай; чего нет — null или пустой список.
+- presenters: докладчики; coauthors: остальные авторы доклада;
+- title: тема доклада без кавычек; event: название конференции; level: уровень конференции, если назван;
+- city, country: место проведения; date_start, date_end: даты в формате ДД.ММ.ГГГГ, только если они есть в записи.""",
+}
 
 
 EXTRACT_PROMPT = """Ты извлекаешь сведения из титульного листа и реферата студенческой работы (ВКР или курсовой).
@@ -228,8 +304,14 @@ def work_kind(title_page: str) -> dict[str, str]:
 
 
 async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCard:
-    """/v1/chat/completions одинаков у vLLM, llama.cpp и Ollama: сервер меняется без правки кода."""
+    return await _chat(http, EXTRACT_PROMPT, text, ExtractedCard, log)
+
+
+async def _chat[M: BaseModel](http: httpx.AsyncClient, prompt: str, text: str, model: type[M], log: dict) -> M:
+    """/v1/chat/completions одинаков у vLLM, llama.cpp и Ollama: сервер меняется без правки кода.
+    Схема ответа — из модели, все поля обязательны: так Qwen не пропускает их."""
     started = time.perf_counter()
+    schema = model.model_json_schema() | {"required": list(model.model_fields)}
     try:
         response = await http.post(
             f"{llm_config.url}/v1/chat/completions",
@@ -237,10 +319,10 @@ async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCar
                 "model": llm_config.model,
                 "temperature": 0,
                 "max_tokens": 1500,
-                "messages": [{"role": "system", "content": EXTRACT_PROMPT}, {"role": "user", "content": text}],
+                "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": text}],
                 "response_format": {
                     "type": "json_schema",
-                    "json_schema": {"name": "card", "schema": CARD_SCHEMA},
+                    "json_schema": {"name": "card", "schema": schema},
                 },
                 # Рассуждения для извлечения только тратят токены: Qwen3.5 съедала на них все 1500, ответ был пустым.
                 # chat_template_kwargs понимает vLLM, reasoning_effort — Ollama; каждый сервер чужой ключ пропускает.
@@ -272,7 +354,7 @@ async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCar
         choice = response.json()["choices"][0]
         finish = choice.get("finish_reason")  # length — ответ обрезан по max_tokens
         content = choice["message"]["content"] or ""  # null — все токены ушли на рассуждения
-        return ExtractedCard.model_validate_json(content)
+        return model.model_validate_json(content)
     except (KeyError, IndexError, TypeError, AttributeError, ValueError, ValidationError) as e:
         log["stage"] = "parse"
         # Сам ответ в лог не пишем: в нём ФИО и аннотация.
@@ -400,3 +482,24 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
     if scanned:
         meta = {k: m | {"confidence": min(m["confidence"], OCR_CONFIDENCE)} for k, m in meta.items()}
     return fields, meta
+
+
+async def extract_record(text: str, work_type: str, http: httpx.AsyncClient, log: dict) -> tuple[dict, dict]:
+    """Запись списка текстом → ({"record": строка шаблона}, fieldMeta по колонкам).
+
+    Уверенность — как у карточки ВКР: значение есть в записи дословно — 0.85, нет — 0.4. Значение из подписей
+    (вид публикации, уровень) в тексте не встречается дословно — оно всегда 0.4, модератор его проверит.
+    """
+    log["stage"] = "ai"
+    model = PublicationRecord if work_type == "publication" else TalkRecord
+    answer = await _chat(http, RECORD_PROMPT[work_type], text, model, log)
+    normalized = norm(text)
+    record, meta = {}, {}
+    for key, column in COLUMNS[work_type].items():
+        value = getattr(answer, key)
+        if value in (None, "", []):
+            continue
+        record[column] = "; ".join(value) if isinstance(value, list) else str(value).strip()
+        confidence = _confidence(value, normalized, name=key in NAME_FIELDS)
+        meta[column] = {"source": "ai", "confidence": confidence}
+    return {"record": record}, meta

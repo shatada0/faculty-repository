@@ -1,5 +1,6 @@
-"""Crossref (api.crossref.org/works) по DOI и список работ из ORCID (pub.orcid.org). Сервер ходит только по адресам из кода."""
+"""Crossref (api.crossref.org/works) по DOI, списки работ из ORCID (pub.orcid.org) и OpenAlex. Сервер ходит только по адресам из кода."""
 
+import asyncio
 import contextlib
 import re
 import time
@@ -17,7 +18,11 @@ logger = get_logger(__name__)
 
 CROSSREF = "https://api.crossref.org/works/"
 ORCID_API = "https://pub.orcid.org/v3.0"
+OPENALEX = "https://api.openalex.org/works"
+OPEN_LIBRARY = "https://openlibrary.org/search.json"
+OPEN_LIBRARY_ISBN = "https://openlibrary.org/isbn"
 BATCH = 50  # столько DOI фильтр Crossref берёт одним запросом, как в citations
+RETRIES_429 = 3
 DOI_RE = re.compile(r"10\.\d{4,9}/\S+")
 ORCID_RE = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
 CYRILLIC = re.compile(r"[а-яё]", re.IGNORECASE)
@@ -87,7 +92,9 @@ def from_crossref(message: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in out.items() if v not in (None, "", [])}
 
 
-async def _get(source: str, url: str, params: dict | None = None, headers: dict | None = None) -> dict | None:
+async def _get(
+    source: str, url: str, params: dict | None = None, headers: dict | None = None, *, follow: bool = False
+) -> dict | None:
     """GET JSON с логом и понятной ошибкой; 404 → None. httpx не следует редиректам."""
     agent = (
         f"faculty-repository (mailto:{app_config.crossref_mailto})"
@@ -96,9 +103,19 @@ async def _get(source: str, url: str, params: dict | None = None, headers: dict 
     )
     started = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": agent, **(headers or {})}) as http:
-            response = await http.get(url, params=params)
-    except httpx.HTTPError as e:
+        # follow — только Open Library: /isbn/… перенаправляет на /books/… того же сайта
+        async with httpx.AsyncClient(
+            timeout=15, headers={"User-Agent": agent, **(headers or {})}, follow_redirects=follow
+        ) as http:
+            for attempt in range(RETRIES_429 + 1):
+                response = await http.get(url, params=params)
+                if response.status_code != 429 or attempt == RETRIES_429:
+                    break
+                # Crossref и OpenAlex ограничивают частоту: ждём, сколько просят, и повторяем
+                wait = min(float(response.headers.get("Retry-After", "") or 2 ** (attempt + 1)), 30)
+                logger.info(f"{source}: слишком часто, ждём", extra={"url": url, "seconds": wait})
+                await asyncio.sleep(wait)
+    except (httpx.HTTPError, ValueError) as e:  # ValueError — Retry-After датой, а не секундами
         logger.warning(f"{source} не ответил", extra={"url": url, "error": repr(e)})
         raise UpstreamError(f"{source} не ответил, попробуйте позже") from e
     log = {"url": url, "status": response.status_code, "duration_ms": round((time.perf_counter() - started) * 1000)}
@@ -161,3 +178,90 @@ async def orcid_dois(orcid: str) -> list[str]:
             if m := DOI_RE.search(value.lower()):
                 dois.append(m[0].rstrip("."))
     return list(dict.fromkeys(dois))
+
+
+async def openalex_dois(orcid: str) -> list[str]:
+    """DOI работ автора по ORCID в OpenAlex: он сам приписывает статьи авторам, в том числе не внесённые в ORCID.
+
+    Страницами по 200, не больше 10: курсор без API-ключа OpenAlex не даёт, а номера страниц — даёт.
+    Следующая страница не пришла — возвращаем собранное: первая ошибка всё равно поднимается.
+    """
+    params: dict[str, str | int] = {"filter": f"author.orcid:{orcid}", "per-page": 200, "select": "doi"}
+    if app_config.crossref_mailto:
+        params["mailto"] = app_config.crossref_mailto
+    if app_config.openalex_api_key:
+        params["api_key"] = app_config.openalex_api_key
+    dois: list[str] = []
+    for page in range(1, 11):
+        try:
+            body = await _get("OpenAlex", OPENALEX, params | {"page": page}) or {}
+        except UpstreamError:
+            if page == 1:
+                raise
+            break
+        results = body.get("results") or []
+        dois += [d.lower().removeprefix("https://doi.org/") for r in results if (d := r.get("doi"))]
+        if len(results) < 200:
+            break
+    return list(dict.fromkeys(dois))
+
+
+def normalize_isbn(raw: str) -> str:
+    """«ISBN 978-5-02-013850-9» → «9785020138509»: только цифры и X, 10 или 13 знаков с верным контрольным."""
+    isbn = re.sub(r"[^0-9X]", "", raw.upper().removeprefix("ISBN"))
+    if len(isbn) == 10:
+        ok = sum((10 - i) * (10 if c == "X" else int(c)) for i, c in enumerate(isbn)) % 11 == 0
+    elif len(isbn) == 13 and "X" not in isbn:
+        ok = sum((3 if i % 2 else 1) * int(c) for i, c in enumerate(isbn)) % 10 == 0
+    else:
+        ok = False
+    if not ok:
+        raise BadRequestError("ISBN с ошибкой: нужно 10 или 13 цифр с верным контрольным знаком", code="isbn")
+    return isbn
+
+
+def _book_author(name: str) -> str:
+    """Open Library: «Ivan Oseledets» или «Иванов, Иван Петрович» → «Oseledets I.», «Иванов И. П.»."""
+    if "," in name:
+        family, given = (x.strip() for x in name.split(",", 1))
+    else:
+        *given_parts, family = name.split()
+        given = " ".join(given_parts)
+    return _author({"family": family, "given": given})
+
+
+LANGS = {"rus": "ru", "eng": "en"}
+
+
+async def lookup_isbn(isbn: str) -> dict[str, Any]:
+    """Книга по ISBN: сначала Crossref (у книг с DOI данные полнее), потом Open Library. 404 — нигде нет.
+    У российских изданий без DOI покрытие слабое: Книжная палата и РГБ открытого API не дают."""
+    body = await _get("Crossref", CROSSREF.rstrip("/"), {"filter": f"isbn:{isbn}", "rows": 1}) or {}
+    if items := (body.get("message") or {}).get("items"):
+        out = from_crossref(items[0])
+        if publisher := items[0].get("publisher"):
+            out["publisher"] = publisher
+        return out
+    # издание по ISBN: его издательство, год и страницы; поиск отдал бы данные произведения (год первого издания)
+    edition = await _get("Open Library", f"{OPEN_LIBRARY_ISBN}/{isbn}.json", follow=True)
+    if not edition:
+        raise NotFoundError("ISBN не найден ни в Crossref, ни в Open Library", code="isbn")
+    # авторы у издания — только ссылками; имена отдаёт поиск
+    found = await _get("Open Library", OPEN_LIBRARY, {"isbn": isbn, "fields": "author_name", "limit": 1}) or {}
+    names = ((found.get("docs") or [{}])[0]).get("author_name") or []
+    title = ": ".join(x for x in (edition.get("title"), edition.get("subtitle")) if x)
+    codes = [x.get("key", "").rsplit("/", 1)[-1] for x in edition.get("languages") or []]
+    language = next((LANGS[c] for c in codes if c in LANGS), None)
+    if not language and title:
+        language = "ru" if CYRILLIC.search(title) else "en"
+    year = re.search(r"\d{4}", edition.get("publish_date") or "")
+    out = {
+        "title": title,
+        "authors": [_book_author(a) for a in names] or None,
+        "publisher": (edition.get("publishers") or [None])[0],
+        "year": int(year[0]) if year else None,
+        "pages": str(edition["number_of_pages"]) if edition.get("number_of_pages") else None,
+        "kind": "monograph",
+        "language": language,
+    }
+    return {k: v for k, v in out.items() if v not in (None, "", [])}

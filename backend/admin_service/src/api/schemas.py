@@ -26,6 +26,15 @@ class DoiRequest(BaseModel):
     overwrite: list[str] = Field(default_factory=list, max_length=20)
 
 
+class IsbnRequest(BaseModel):
+    isbn: str = Field("", max_length=40)
+    overwrite: list[str] = Field(default_factory=list, max_length=20)
+
+
+class DoiListRequest(BaseModel):
+    text: str = Field(max_length=200_000)  # DOI через пробелы, запятые или строками, ссылками doi.org
+
+
 class MatchRequest(BaseModel):
     displayName: str = Field(max_length=300)
     personId: UUID | None = None

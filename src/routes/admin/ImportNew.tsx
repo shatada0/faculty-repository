@@ -1,18 +1,21 @@
 import { useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { createImport, downloadTemplate, getTemplateColumns, getUploadLimits, previewImportTable } from '@/api'
-import type { ImportPreview, WorkType } from '@/api/types'
+import { createImport, downloadTemplate, getTemplateColumns, getUploadLimits, importDoiList, previewImportTable } from '@/api'
+import type { ImportPreview, OrcidImport, WorkType } from '@/api/types'
 import { FileDrop } from '@/components/FileDrop'
 import { TypeIcon } from '@/components/WorkCard'
-import { Alert, Button, Card, cn } from '@/components/ui'
+import { Alert, Button, Card, Textarea, cn } from '@/components/ui'
 import { useTitle } from '@/components/Layout'
 
 const VARIANTS = [
   // ВКР или курсовая — сервер узнаёт по титульнику каждого файла, поэтому вариант один
   { kind: 'archive', workType: 'vkr', title: 'ВКР и курсовые', desc: 'PDF или ZIP, можно пачкой. Поля, авторов и рубрики заполнит сервер; карточки без замечаний сразу публикуются, остальные ждут в «Проверке».' },
-  { kind: 'table', workType: 'publication', title: 'Публикации таблицей', desc: 'Файл .xlsx или .csv по шаблону.' },
+  { kind: 'table', workType: 'publication', title: 'Публикации файлом', desc: '.xlsx или .csv по шаблону либо BibTeX и RIS — выгрузки Scopus, Web of Science, Google Scholar, Zotero, Mendeley.' },
   { kind: 'table', workType: 'talk', title: 'Выступления таблицей', desc: 'Файл .xlsx или .csv по шаблону.' },
+  { kind: 'doi', workType: 'publication', title: 'Публикации по DOI', desc: 'Вставьте DOI пачкой — карточки заполнит Crossref. Уже известные DOI пропускаются.' },
+  { kind: 'text', workType: 'publication', title: 'Публикации списком', desc: 'Список текстом из eLIBRARY, отчёта или резюме: ИИ разберёт каждую запись в карточку.' },
+  { kind: 'text', workType: 'talk', title: 'Выступления списком', desc: 'Программа конференции или список докладов текстом: ИИ разберёт каждую запись.' },
 ] as const
 type Variant = (typeof VARIANTS)[number]
 
@@ -61,9 +64,12 @@ export default function ImportNew() {
   const [preview, setPreview] = useState<ImportPreview | null>(null)
   const [progress, setProgress] = useState<number | null>(null)
   const [serverErr, setServerErr] = useState<string>()
+  const [text, setText] = useState('') // kind text / doi: the pasted list
+  const [doiResult, setDoiResult] = useState<OrcidImport>()
   const abort = useRef<AbortController | null>(null)
 
   const isArchive = variant.kind === 'archive'
+  const isPaste = variant.kind === 'text' || variant.kind === 'doi'
   const tableFile = isArchive ? meta : file
   const limits = useQuery({ queryKey: ['upload-limits'], queryFn: getUploadLimits, staleTime: Infinity })
   const columns = useQuery({ queryKey: ['admin-template', variant.workType], queryFn: () => getTemplateColumns(variant.workType), staleTime: Infinity })
@@ -71,6 +77,7 @@ export default function ImportNew() {
   function choose(v: Variant) {
     setVariant(v)
     setFile(null); setFiles([]); setMeta(null); setPreview(null); setFileErr(undefined); setMetaErr(undefined); setServerErr(undefined)
+    setText(''); setDoiResult(undefined)
   }
 
   async function onTable(f: File | null, err?: string) {
@@ -85,15 +92,17 @@ export default function ImportNew() {
   }
 
   const headersBad = !!preview?.missingColumns.length
-  const chosen = isArchive ? files.length > 0 : !!file
+  const chosen = isPaste ? !!text.trim() : isArchive ? files.length > 0 : !!file
   const canUpload = chosen && !headersBad && progress === null && !(tableFile && !preview)
 
   async function upload() {
     if (!chosen) return
+    if (variant.kind === 'doi') return importDois()
     const form = new FormData()
     form.append('kind', variant.kind)
     form.append('workType', variant.workType)
-    for (const f of isArchive ? files : [file!]) form.append('file', f)
+    if (variant.kind === 'text') form.append('text', text)
+    else for (const f of isArchive ? files : [file!]) form.append('file', f)
     if (meta) form.append('metaTable', meta)
     abort.current = new AbortController()
     setServerErr(undefined)
@@ -108,6 +117,19 @@ export default function ImportNew() {
     }
   }
 
+  // DOI go straight to drafts (no import record): the server answers with a ready summary
+  async function importDois() {
+    setServerErr(undefined); setDoiResult(undefined); setProgress(0)
+    try {
+      setDoiResult(await importDoiList(text))
+      qc.invalidateQueries({ predicate: (x) => String(x.queryKey[0]).startsWith('admin') })
+    } catch (e) {
+      setServerErr(e instanceof Error ? e.message : 'Ошибка импорта')
+    } finally {
+      setProgress(null)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <h1 className="text-4xl font-bold">Новый импорт</h1>
@@ -115,7 +137,7 @@ export default function ImportNew() {
       <fieldset className="grid sm:grid-cols-3">
         <legend className="mb-2 font-bold">Что загружаем</legend>
         {VARIANTS.map((v) => (
-          <label key={v.workType} className={cn('flex cursor-pointer gap-3 p-5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-brand', variant === v ? 'bg-brand text-white' : 'bg-panel hover:bg-panel-2')}>
+          <label key={v.kind + v.workType} className={cn('flex cursor-pointer gap-3 p-5 has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-brand', variant === v ? 'bg-brand text-white' : 'bg-panel hover:bg-panel-2')}>
             <input type="radio" name="variant" className="sr-only" checked={variant === v} onChange={() => choose(v)} />
             <TypeIcon type={v.workType} className="mt-1 h-5 w-5" />
             <span><span className="block text-lg font-bold">{v.title}</span><span className="text-[15px]">{v.desc}</span></span>
@@ -124,7 +146,7 @@ export default function ImportNew() {
       </fieldset>
 
       <Card className="space-y-5">
-        <div className="flex flex-wrap items-center gap-2 text-sm">
+        {!isPaste && <div className="flex flex-wrap items-center gap-2 text-sm">
           <Button variant="outline" size="sm" onClick={() => downloadTemplate(variant.workType)}>
             Шаблон таблицы
           </Button>
@@ -132,9 +154,15 @@ export default function ImportNew() {
           {import.meta.env.VITE_USE_MOCKS === 'true' && DEMO[variant.workType] && (
             <a href={DEMO[variant.workType]} download className="text-ink hover:underline">Демо-таблица</a>
           )}
-        </div>
+        </div>}
 
-        {!limits.data ? null : isArchive ? (
+        {isPaste ? (
+          <label className="block space-y-1">
+            <span className="font-medium">{variant.kind === 'doi' ? 'DOI — через пробел, запятую или с новой строки, можно ссылками doi.org' : 'Список: по записи на абзац или пронумерованный («1. …», «2. …»)'}</span>
+            <Textarea rows={12} value={text} onChange={(e) => { setText(e.target.value); setDoiResult(undefined) }}
+              placeholder={variant.kind === 'doi' ? '10.1137/090752286\nhttps://doi.org/10.1016/j.jcp.2015.10.015' : '1. Орлов Д. С. Графовые нейронные сети // Вестник университета. 2025. № 2. С. 10–20.'} />
+          </label>
+        ) : !limits.data ? null : isArchive ? (
           <div className="grid gap-4 md:grid-cols-2">
             <FileDrop label="Работы: PDF или ZIP" {...limits.data.archive} multiple files={files} error={fileErr}
               onFiles={(f, e) => { setFiles(f); setFileErr(e) }} />
@@ -154,6 +182,13 @@ export default function ImportNew() {
         {preview && !headersBad && preview.total > 0 && <TablePreview p={preview} />}
         {preview && !headersBad && preview.total === 0 && <Alert>В таблице нет строк с данными.</Alert>}
         {serverErr && <Alert tone="red" title="Сервер отклонил загрузку">{serverErr}</Alert>}
+        {doiResult && (
+          <Alert tone="blue">
+            {doiResult.message}{' '}
+            {doiResult.created > 0 && <button type="button" className="font-medium underline" onClick={() => navigate('/admin/works?status=draft')}>К черновикам</button>}
+            {doiResult.notFound.length > 0 && <span className="mt-1 block text-sm">Нет в Crossref: {doiResult.notFound.join(', ')}</span>}
+          </Alert>
+        )}
 
         {progress !== null ? (
           <div className="space-y-2">
@@ -166,7 +201,7 @@ export default function ImportNew() {
             </div>
           </div>
         ) : (
-          <Button onClick={upload} disabled={!canUpload}>Загрузить</Button>
+          <Button onClick={upload} disabled={!canUpload}>{isPaste ? 'Импортировать' : 'Загрузить'}</Button>
         )}
       </Card>
     </div>

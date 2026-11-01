@@ -89,6 +89,11 @@ export const getAdminWorkFile = (id: string) => api<FileLink>(`/admin/works/${id
 /** Fill a saved work from DOI: empty fields are filled; filled ones that differ come back as conflicts unless listed in `overwrite`. */
 export const fillFromDoi = (id: string, doi: string, overwrite: string[] = []) =>
   api<{ work: AdminWork; conflicts: DoiConflict[] }>(`/admin/works/${id}/doi`, { method: 'POST', json: { doi, overwrite } })
+/** The same for a book by ISBN: Crossref first, then Open Library; fields get the `isbn` source. */
+export const fillFromIsbn = (id: string, isbn: string, overwrite: string[] = []) =>
+  api<{ work: AdminWork; conflicts: DoiConflict[] }>(`/admin/works/${id}/isbn`, { method: 'POST', json: { isbn, overwrite } })
+/** Many DOIs pasted as text → publication drafts filled from Crossref (like the ORCID import). */
+export const importDoiList = (text: string) => api<OrcidImport>('/admin/works/doi-import', { method: 'POST', json: { text } })
 export const getUploadLimits = () => api<UploadLimits>('/upload-limits')
 export const getAdminMaterialLink = (workId: string, id: string) => api<FileLink>(`/admin/works/${workId}/materials/${id}`)
 export const reviewMaterial = (workId: string, id: string, status: MaterialStatus, reason = '') =>

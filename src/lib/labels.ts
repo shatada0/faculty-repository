@@ -110,6 +110,8 @@ export const sourceLabels: Record<FieldSource, string> = {
   table: 'таблица',
   ai: 'ИИ',
   doi: 'DOI',
+  isbn: 'ISBN',
+  bibliography: 'BibTeX/RIS',
   direction: 'направление подготовки',
   manual: 'вручную',
 }

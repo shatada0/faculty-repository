@@ -62,6 +62,7 @@ export default function Person() {
           <p className="text-ink-2">
             {[p.academicDegree, p.academicTitle].filter(Boolean).join(', ')}
             {p.orcid && <>{(p.academicDegree || p.academicTitle) && ' · '}<a href={`https://orcid.org/${p.orcid}`} target="_blank" rel="noreferrer">ORCID {p.orcid}</a></>}
+            {p.elibraryUrl && <>{(p.academicDegree || p.academicTitle || p.orcid) && ' · '}<a href={p.elibraryUrl} target="_blank" rel="noreferrer">РИНЦ{p.spin && ` SPIN ${p.spin}`}</a></>}
           </p>
           {p.kind === 'staff' && import.meta.env.VITE_USE_MOCKS !== 'true' && (
             <p><a href={personWorksDocxUrl(p.id, year || undefined)}>Список трудов по ГОСТ{year && ` за ${year} год`} (docx)</a></p>

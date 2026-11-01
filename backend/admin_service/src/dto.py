@@ -19,5 +19,7 @@ class PersonIn(BaseModel):
     academicDegree: Short = Field(None, max_length=300)
     academicTitle: Short = Field(None, max_length=300)
     orcid: Short = Field(None, max_length=19)
+    spin: Short = Field(None, max_length=20)
+    elibraryId: Short = Field(None, max_length=20)
     affiliation: Short = Field(None, max_length=500)
     aliases: list[Annotated[str, Field(max_length=300)]] | None = Field(None, max_length=50)

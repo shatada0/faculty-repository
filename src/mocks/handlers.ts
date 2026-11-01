@@ -7,7 +7,7 @@ import { shortName } from './names'
 import { templateCsv, templates, toCsv } from './table'
 import { db, type MockPerson } from './seed'
 import {
-  adminPeople, adminWorks, advance, retryImport, allAuthorRefs, applyEdit, asAuthor, canDo, catalog, createImport, departments, DoiError, facets, fillFromDoi,
+  adminPeople, adminWorks, advance, retryImport, allAuthorRefs, applyEdit, asAuthor, canDo, catalog, createImport, departments, DoiError, facets, fillFromDoi, fillFromIsbn, importDoiList,
   fits, ImportError, isVisible, latest, match, merge, metrics, myWorks, nextInQueue, personCard, personWorks, previewTable, profile,
   publicImport, publicItem, relatedOptions, resolvePerson, searchClassifier, staffList, suggest, summary, syncRelated, template, toPublic, unmatched,
   UPLOAD_LIMITS, withChecks,
@@ -333,6 +333,28 @@ export const handlers = [
     Object.assign(w, { status: 'draft', updatedAt: now() })
     return adminJson(w)
   }, true),
+  post('/admin/works/doi-import', async ({ request }) => {
+    const { text = '' } = (await request.json()) as { text?: string }
+    try {
+      return HttpResponse.json(importDoiList(text, session!.name))
+    } catch (e) {
+      if (e instanceof DoiError) return err(e.status, 'doi', e.message)
+      throw e
+    }
+  }, true),
+  post('/admin/works/:id/isbn', async ({ params, request }) => {
+    const w = work(params.id)
+    if (!w) return notFound('Работа не найдена')
+    if (w.type !== 'publication') return err(400, 'bad_request', 'ISBN бывает только у публикаций')
+    const { isbn, overwrite = [] } = (await request.json()) as { isbn?: string; overwrite?: string[] }
+    try {
+      const conflicts = fillFromIsbn(w, isbn ?? '', overwrite)
+      return HttpResponse.json({ work: withChecks(w), conflicts })
+    } catch (e) {
+      if (e instanceof DoiError) return err(e.status, 'isbn', e.message)
+      throw e
+    }
+  }, true),
   post('/admin/works/:id/doi', async ({ params, request }) => {
     const w = work(params.id)
     if (!w) return notFound('Работа не найдена')
@@ -383,9 +405,12 @@ export const handlers = [
     delete body.id
     if (body.fullName !== undefined && !body.fullName?.trim()) return err(400, 'bad_name', 'Укажите ФИО')
     if (body.orcid && !/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(body.orcid)) return err(400, 'bad_orcid', 'ORCID в формате 0000-0000-0000-0000')
+    if (body.spin && !/^\d{4}-\d{4}$/.test(body.spin)) return err(400, 'bad_spin', 'SPIN-код РИНЦ в формате 1234-5678')
+    if (body.elibraryId && !/^\d{1,10}$/.test(body.elibraryId)) return err(400, 'bad_elibrary_id', 'AuthorID РИНЦ — только цифры')
     const badDept = unknownDepartment(body.department)
     if (badDept) return badDept
     Object.assign(p, body)
+    p.elibraryUrl = p.elibraryId ? `https://elibrary.ru/author_profile.asp?id=${p.elibraryId}` : undefined
     for (const [k, v] of Object.entries(body)) if (v === null) delete (p as Partial<Person>)[k as keyof Person]
     for (const w of db.works) for (const a of allAuthorRefs(w)) if (a.personId === p.id) a.kind = p.kind
     return HttpResponse.json(personCard(p))

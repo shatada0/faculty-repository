@@ -1,0 +1,22 @@
+meta {
+  name: Пачка DOI без DOI — 400
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/admin/works/doi-import
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "text": "здесь нет ни одного идентификатора"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq doi
+}

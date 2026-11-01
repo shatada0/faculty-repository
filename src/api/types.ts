@@ -11,6 +11,9 @@ export interface Person {
   academicDegree?: string
   academicTitle?: string
   orcid?: string
+  spin?: string // РИНЦ SPIN-код, 1234-5678
+  elibraryId?: string // РИНЦ AuthorID
+  elibraryUrl?: string // the author's eLIBRARY page, built by the server from AuthorID (read-only)
   affiliation?: string
   photoUrl?: string
   aliases?: string[] // name variants used for author matching (admin only)
@@ -39,7 +42,7 @@ export interface AuthorRef {
 export type WorkType = 'vkr' | 'coursework' | 'publication' | 'talk'
 export type AccessLevel = 'full' | 'card_only' | 'hidden'
 export type WorkStatus = 'draft' | 'published' | 'rejected'
-export type FieldSource = 'table' | 'ai' | 'doi' | 'manual' | 'direction'
+export type FieldSource = 'table' | 'ai' | 'doi' | 'isbn' | 'bibliography' | 'manual' | 'direction'
 export type Language = 'ru' | 'en' | 'other'
 
 // Classifiers as in eLIBRARY (ГРНТИ, ОЕСР), Web of Science categories, Scopus ASJC.
@@ -201,7 +204,7 @@ export interface UploadLimits { archive: UploadRule; table: UploadRule; workFile
 /** A work in the author's "Мои работы". */
 export interface MyWork { id: string; title: string; kind: string; year: number; public: boolean; canUpload: boolean; materials: Material[] }
 
-export type ImportKind = 'archive' | 'table'
+export type ImportKind = 'archive' | 'table' | 'text' // text: a pasted list, each entry read by the AI
 export type ImportStatus = 'uploading' | 'processing' | 'done' | 'failed'
 export type ImportItemStatus = 'pending' | 'extracted' | 'filled' | 'published' | 'duplicate' | 'error'
 

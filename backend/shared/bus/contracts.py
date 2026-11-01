@@ -13,9 +13,12 @@ class ImportTopic(StrEnum):
 
 
 class ItemCreatedDTO(BaseModel):
+    """PDF из MinIO (file_key) или запись списка текстом (text)."""
+
     item_id: UUID
-    file_key: str
+    file_key: str | None = None
     work_type: str
+    text: str | None = None
 
 
 class ItemExtractedDTO(BaseModel):

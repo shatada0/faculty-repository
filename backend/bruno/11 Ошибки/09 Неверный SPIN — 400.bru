@@ -1,0 +1,22 @@
+meta {
+  name: Неверный SPIN — 400
+  type: http
+  seq: 9
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/people/{{personA}}
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "spin": "12-34"
+  }
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq bad_spin
+}

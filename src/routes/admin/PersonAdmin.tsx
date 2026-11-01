@@ -60,6 +60,7 @@ function PersonForm({ person }: { person: AdminPersonCard }) {
       const body: PersonPatch = {
         fullName: f.fullName.trim(), kind: f.kind, department: f.department || null, position: f.position || null,
         academicDegree: f.academicDegree || null, academicTitle: f.academicTitle || null, orcid: f.orcid || null,
+        spin: f.spin || null, elibraryId: f.elibraryId || null,
         affiliation: f.affiliation || null, aliases: f.aliasesText.split('\n').map((s) => s.trim()).filter(Boolean),
       }
       const saved = await patchPerson(person.id, body)
@@ -90,6 +91,10 @@ function PersonForm({ person }: { person: AdminPersonCard }) {
         </>
       )}
       <Field label="ORCID">{(id) => <Input id={id} value={f.orcid ?? ''} onChange={set('orcid')} placeholder="0000-0002-1825-0097" />}</Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="SPIN-код РИНЦ">{(id) => <Input id={id} value={f.spin ?? ''} onChange={set('spin')} placeholder="1234-5678" />}</Field>
+        <Field label="AuthorID РИНЦ" hint="Из адреса страницы автора в eLIBRARY">{(id) => <Input id={id} value={f.elibraryId ?? ''} onChange={set('elibraryId')} inputMode="numeric" />}</Field>
+      </div>
       <Field label="Варианты написания ФИО" className="sm:col-span-2" hint="По одному в строке, в том числе латиницей. По ним сопоставляются авторы при импорте.">
         {(id) => <Textarea id={id} rows={4} value={f.aliasesText} onChange={set('aliasesText')} />}
       </Field>

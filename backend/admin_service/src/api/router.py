@@ -5,7 +5,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
-from admin_service.src.api.schemas import BulkRequest, DoiRequest, MaterialDecision, RejectRequest
+from admin_service.src.api.schemas import (
+    BulkRequest,
+    DoiListRequest,
+    DoiRequest,
+    IsbnRequest,
+    MaterialDecision,
+    RejectRequest,
+)
 from admin_service.src.dependencies import JsonObject, Moderator, Q, Works, WorkType
 from shared.auth.session import require_moderator
 from shared.exceptions import BadRequestError
@@ -121,6 +128,17 @@ async def reject(body: RejectRequest, service: Works, user: Moderator, work_id: 
 @router.post("/works/{work_id:uuid}/doi")
 async def fill_from_doi(body: DoiRequest, service: Works, user: Moderator, work_id: UUID) -> dict:
     return await service.fill_from_doi(work_id, body.doi, body.overwrite, user)
+
+
+@router.post("/works/{work_id:uuid}/isbn")
+async def fill_from_isbn(body: IsbnRequest, service: Works, user: Moderator, work_id: UUID) -> dict:
+    return await service.fill_from_isbn(work_id, body.isbn, body.overwrite, user)
+
+
+@router.post("/works/doi-import")
+async def doi_import(body: DoiListRequest, service: Works, user: Moderator) -> dict:
+    """Пачка DOI → черновики публикаций по Crossref, как импорт из ORCID."""
+    return await service.import_doi_list(body.text, user)
 
 
 @router.get("/events")

@@ -23,12 +23,13 @@ async def preview(service: Service, workType: Annotated[WorkType, Form()], file:
 async def create_import(
     service: Service,
     user: Moderator,
-    kind: Annotated[Literal["archive", "table"], Form()],
+    kind: Annotated[Literal["archive", "table", "text"], Form()],
     workType: Annotated[WorkType, Form()],
-    file: Annotated[list[UploadFile], File()],  # архив: PDF и zip вперемешку, поле file повторяется
+    file: Annotated[list[UploadFile] | None, File()] = None,  # архив: PDF и zip вперемешку, поле file повторяется
     metaTable: Annotated[UploadFile | None, File()] = None,
+    text: Annotated[str | None, Form(max_length=500_000)] = None,  # kind=text: список работ, по записи на абзац
 ) -> dict:
-    return await service.create(kind, workType, file, metaTable, user)
+    return await service.create(kind, workType, file or [], metaTable, user, text)
 
 
 @router.get("/imports")

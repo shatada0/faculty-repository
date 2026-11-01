@@ -66,8 +66,9 @@ server {
     # client_max_body_size 0: подзапрос наследует серверный 1m, и на загрузке больше 1 МБ nginx отдавал 500 вместо ответа
     location = /_auth { internal; client_max_body_size 0; proxy_pass http://auth_service/api/auth/me; proxy_pass_request_body off; proxy_set_header Content-Length ""; }
 
-    # импорт из ORCID: сотни DOI через Crossref внутри запроса
+    # импорт из ORCID и пачки DOI: сотни DOI через Crossref внутри запроса
     location ~ ^/api/admin/people/[^/]+/orcid-import$ { proxy_read_timeout 300s; proxy_pass http://admin_service; }
+    location = /api/admin/works/doi-import        { proxy_read_timeout 300s; proxy_pass http://admin_service; }
     location /api/admin/templates  { proxy_pass http://import_service; }
     location /api/admin/exports/   { proxy_buffering off; proxy_pass http://admin_service; }
     location /api/admin/           { proxy_pass http://admin_service; }

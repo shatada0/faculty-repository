@@ -25,6 +25,8 @@ class Person(Base):
     academic_degree: Mapped[str | None] = mapped_column(Text)
     academic_title: Mapped[str | None] = mapped_column(Text)
     orcid: Mapped[str | None] = mapped_column(Text)
+    spin: Mapped[str | None] = mapped_column(Text)  # SPIN-код автора в РИНЦ: 1234-5678
+    elibrary_id: Mapped[str | None] = mapped_column(Text)  # AuthorID в РИНЦ: по нему страница автора и API eLIBRARY
     affiliation: Mapped[str | None] = mapped_column(Text)
     photo_key: Mapped[str | None] = mapped_column(Text)
     merged_into: Mapped[UUID | None] = mapped_column(ForeignKey("people.id"))

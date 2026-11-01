@@ -20,7 +20,19 @@ from shared.works import Work, WorkPerson
 logger = get_logger(__name__)
 
 ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
-FILLABLE = ("department", "position", "academic_degree", "academic_title", "orcid", "affiliation", "photo_key")
+SPIN = re.compile(r"\d{4}-\d{4}")  # SPIN-код РИНЦ
+ELIBRARY_ID = re.compile(r"\d{1,10}")  # AuthorID РИНЦ
+FILLABLE = (
+    "department",
+    "position",
+    "academic_degree",
+    "academic_title",
+    "orcid",
+    "spin",
+    "elibrary_id",
+    "affiliation",
+    "photo_key",
+)
 COLUMNS = {
     "kind": "kind",
     "fullName": "full_name",
@@ -29,6 +41,8 @@ COLUMNS = {
     "academicDegree": "academic_degree",
     "academicTitle": "academic_title",
     "orcid": "orcid",
+    "spin": "spin",
+    "elibraryId": "elibrary_id",
     "affiliation": "affiliation",
 }
 
@@ -48,6 +62,10 @@ def _validate(body: PersonIn, *, new: bool) -> None:
         raise BadRequestError("Укажите ФИО", code="bad_name")
     if body.orcid and not ORCID.fullmatch(body.orcid):
         raise BadRequestError("ORCID в формате 0000-0000-0000-0000", code="bad_orcid")
+    if body.spin and not SPIN.fullmatch(body.spin.strip()):
+        raise BadRequestError("SPIN-код РИНЦ в формате 1234-5678", code="bad_spin")
+    if body.elibraryId and not ELIBRARY_ID.fullmatch(body.elibraryId.strip()):
+        raise BadRequestError("AuthorID РИНЦ — только цифры", code="bad_elibrary_id")
 
 
 @dataclass(slots=True)

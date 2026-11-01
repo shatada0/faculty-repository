@@ -48,7 +48,7 @@ export default function ImportDetail() {
           <ImportStatusBadge status={imp.status} errors={imp.stats.errors} />
         </div>
         <p className="text-sm text-ink-2">
-          {workTypePlural[imp.workType]} · {imp.kind === 'archive' ? 'архив' : 'таблица'}
+          {workTypePlural[imp.workType]} · {{ archive: 'архив', table: 'таблица', text: 'список текстом' }[imp.kind]}
           {imp.metaTableName && <> · таблица сведений: {imp.metaTableName}</>} · {imp.createdBy}, {formatDateTime(imp.createdAt)}
         </p>
       </header>
@@ -71,7 +71,7 @@ export default function ImportDetail() {
       <div className="flex flex-wrap items-center gap-2">
         {imp.stats.filled > 0 && <Link to={`/admin/review?importId=${imp.id}`} className={btn('primary')}>Проверить черновики ({imp.stats.filled})</Link>}
         {imp.stats.unmatched > 0 && <Link to="/admin/people?unmatched=1" className={btn('outline')}>Разобрать авторов</Link>}
-        {imp.kind === 'archive' && imp.status === 'done' && imp.stats.errors > 0 && (
+        {imp.kind !== 'table' && imp.status === 'done' && imp.stats.errors > 0 && (
           <Button variant="outline" loading={retrying} onClick={async () => {
             setRetrying(true)
             setRetryErr(undefined)
@@ -95,7 +95,7 @@ export default function ImportDetail() {
       <Card className="overflow-x-auto">
         <table className="w-full min-w-[44rem] text-sm">
           <thead className="border-b-2 border-brand text-left">
-            <tr><th className="p-3">{imp.kind === 'archive' ? 'Файл' : 'Строка'}</th><th className="p-3">Название</th><th className="p-3">Статус</th><th className="p-3">Подробности</th></tr>
+            <tr><th className="p-3">{{ archive: 'Файл', table: 'Строка', text: 'Запись' }[imp.kind]}</th><th className="p-3">Название</th><th className="p-3">Статус</th><th className="p-3">Подробности</th></tr>
           </thead>
           <tbody className="divide-y divide-rule">
             {items.map((it, i) => (

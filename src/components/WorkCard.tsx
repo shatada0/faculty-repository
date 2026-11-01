@@ -40,7 +40,7 @@ export const MaterialStatusBadge = ({ status }: { status: MaterialStatus }) => <
 export const FieldSourceBadge = ({ source, confidence, low }: { source: FieldSource; confidence?: number; low?: boolean }) => {
   const text = source === 'ai'
     ? `ИИ${confidence !== undefined ? `, уверенность ${Math.round(confidence * 100)}%` : ''}${low ? ' — проверьте' : ''}`
-    : { table: 'из таблицы', doi: 'по DOI', manual: 'вручную', direction: 'по направлению подготовки' }[source]
+    : { table: 'из таблицы', doi: 'по DOI', isbn: 'по ISBN', bibliography: 'из BibTeX/RIS', manual: 'вручную', direction: 'по направлению подготовки' }[source]
   return <span className={cn('text-sm italic', low ? 'text-warn' : 'text-muted')}>{text}</span>
 }
 

@@ -1,0 +1,22 @@
+meta {
+  name: Пустой список текстом — 400
+  type: http
+  seq: 12
+}
+
+post {
+  url: {{baseUrl}}/api/admin/imports
+  body: multipartForm
+  auth: none
+}
+
+body:multipart-form {
+  kind: text
+  workType: publication
+  text: " "
+}
+
+assert {
+  res.status: eq 400
+  res.body.error.code: eq bad_text
+}

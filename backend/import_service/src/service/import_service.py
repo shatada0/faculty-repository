@@ -12,7 +12,7 @@ from uuid import UUID
 
 from fastapi import UploadFile
 from pydantic import ValidationError
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 
 from import_service.src.service import records
 from import_service.src.service.archive import MAX_FILES, ArchiveError, display_name, extract_pdfs
@@ -24,8 +24,10 @@ from shared.config import UPLOAD_LIMITS
 from shared.db.base import now
 from shared.exceptions import BadRequestError, NotFoundError
 from shared.imports import ExtractionResult, Import, ImportItem
+from shared.imports.bibliography import is_bibliography
 from shared.imports.tables import (
     MAX_ROWS,
+    TEMPLATES,
     Row,
     TableError,
     TooManyRows,
@@ -43,6 +45,7 @@ from shared.repository.works_repository import WorkRepository
 from shared.storage import Storage, detect_type
 from shared.uow import UnitOfWork, UnitOfWorkFactory
 from shared.works import Work
+from shared.works import labels as L
 from shared.works.checks import check_work
 from shared.works.schemas import apply_write, parse_write
 
@@ -68,6 +71,12 @@ def import_dict(imp: Import, stats: dict[str, int]) -> dict:
         "createdBy": imp.created_by,
         "stats": stats,
     }
+
+
+def _short(entry: str) -> str:
+    """Запись списка в колонке «Файл / строка»: первые 120 знаков одной строкой."""
+    flat = " ".join(entry.split())
+    return flat if len(flat) <= 120 else flat[:119] + "…"
 
 
 def item_dict(it: ImportItem) -> dict:
@@ -210,7 +219,7 @@ class ImportService:
                         select(ImportItem).where(
                             ImportItem.import_id == import_id,
                             ImportItem.status == "error",
-                            ImportItem.file_key.is_not(None),
+                            or_(ImportItem.file_key.is_not(None), ImportItem.text.is_not(None)),
                         )
                     )
                 )
@@ -281,22 +290,37 @@ class ImportService:
         return w, unmatched
 
     async def create(
-        self, kind: str, work_type: str, files: list[UploadFile], meta_table: UploadFile | None, user: SessionUser
+        self,
+        kind: str,
+        work_type: str,
+        files: list[UploadFile],
+        meta_table: UploadFile | None,
+        user: SessionUser,
+        text: str | None = None,
     ) -> dict:
-        if kind == "table" and work_type in ("publication", "talk"):
+        if kind == "text" and work_type in ("publication", "talk"):
+            import_id = await self._create_text(work_type, text or "", user)
+        elif kind == "table" and work_type in ("publication", "talk"):
             if len(files) != 1:
                 raise BadRequestError("Таблица импортируется одним файлом")
             import_id = await self._create_table(work_type, files[0], user)
         elif kind == "archive" and work_type in ("vkr", "coursework"):
             import_id = await self._create_archive(work_type, files, meta_table, user)
         else:
-            raise BadRequestError("Таблицей импортируются публикации и доклады, архивом — ВКР и курсовые")
+            raise BadRequestError(
+                "Таблицей и списком текстом импортируются публикации и доклады, архивом — ВКР и курсовые"
+            )
         return (await self.get(import_id, None))["import"]
 
     async def _create_table(self, work_type: str, file: UploadFile, user: SessionUser) -> UUID:
+        """csv/xlsx по шаблону или BibTeX/RIS (только публикации): записи библиографии читаются как строки шаблона."""
+        bib = is_bibliography(file.filename or "")
+        if bib and work_type != "publication":
+            raise BadRequestError("BibTeX и RIS импортируются как публикации", code="bad_table")
         header, body = await _table(file)
         _need_columns(header, work_type)
         rows = to_records(header, [c for _, c in body], work_type)
+        source: records.Source = (lambda _: {"source": "bibliography"}) if bib else records.from_table
         async with self.uow_factory() as uow:
             imp = Import(
                 id=uuid.uuid7(),
@@ -315,35 +339,74 @@ class ImportService:
                 item = ImportItem(
                     import_id=imp.id,
                     n=n,
-                    ref=f"Строка {line}",
+                    ref=f"{'Запись' if bib else 'Строка'} {line}",
                     title=record.get("Название") or record.get("Название доклада") or None,
                 )
                 uow.session.add(item)
-                if miss := missing_in_row(record, work_type):
-                    item.status, item.error = "error", records.row_error(miss)
-                    continue
-                if work_type == "publication":
-                    fields, meta, authors = records.publication(record)
-                    fields["authors"] = [_ref(a, found.get(a)) for a in authors]
-                else:
-                    fields, meta, presenters, coauthors = records.talk(record)
-                    fields["presenters"] = [_ref(p, found.get(p)) for p in presenters]
-                    fields["authors"] = [*fields["presenters"], *(_ref(c, found.get(c)) for c in coauthors)]
-                try:  # parse_write падает до первой записи в сессию: строка с ошибкой не роняет весь импорт
-                    w, unmatched = await self._draft(uow, imp, fields, meta, created_by=user.id)
-                except ValidationError as e:
-                    item.status, item.error = "error", _bad_value(e, work_type)
-                    continue
-                work_ids.append(w.id)
-                item.status = "duplicate" if w.duplicate_of else "filled"
-                item.work_id, item.duplicate_of, item.title, item.unmatched_authors = (
-                    w.id,
-                    w.duplicate_of,
-                    w.title,
-                    unmatched,
-                )
+                if work_id := await self._row(uow, imp, item, record, found, source, created_by=user.id):
+                    work_ids.append(work_id)
             await self.works.refresh_search(uow, work_ids)
         logger.info("Импорт таблицы", extra={"import_id": str(imp.id), "rows": len(rows)})
+        return imp.id
+
+    async def _row(
+        self,
+        uow: UnitOfWork,
+        imp: Import,
+        item: ImportItem,
+        record: dict[str, str],
+        found: dict[str, Person],
+        source: records.Source,
+        **extra: Any,
+    ) -> UUID | None:
+        """Строка шаблона (таблица, BibTeX/RIS или ответ ИИ на запись текстом) → черновик. → id работы или None."""
+        work_type = imp.work_type
+        if miss := missing_in_row(record, work_type):
+            item.status, item.error = "error", records.row_error(miss)
+            return None
+        if work_type == "publication":
+            fields, meta, authors = records.publication(record, source)
+            fields["authors"] = [_ref(a, found.get(a)) for a in authors]
+        else:
+            fields, meta, presenters, coauthors = records.talk(record, source)
+            fields["presenters"] = [_ref(p, found.get(p)) for p in presenters]
+            fields["authors"] = [*fields["presenters"], *(_ref(c, found.get(c)) for c in coauthors)]
+        try:  # parse_write падает до первой записи в сессию: строка с ошибкой не роняет весь импорт
+            w, unmatched = await self._draft(uow, imp, fields, meta, **extra)
+        except ValidationError as e:
+            item.status, item.error = "error", _bad_value(e, work_type)
+            return None
+        item.status = "duplicate" if w.duplicate_of else "filled"
+        item.work_id, item.duplicate_of, item.title, item.unmatched_authors = w.id, w.duplicate_of, w.title, unmatched
+        return w.id
+
+    async def _create_text(self, work_type: str, text: str, user: SessionUser) -> UUID:
+        """Список работ текстом — скопированный из eLIBRARY, отчёта или программы конференции: каждую запись
+        разбирает ИИ в строку шаблона, дальше — как строка таблицы. Черновики ждут модератора."""
+        entries = records.split_entries(text)
+        if not entries:
+            raise BadRequestError("В тексте нет ни одной записи", code="bad_text")
+        if len(entries) > MAX_FILES:
+            raise BadRequestError(f"За один раз — не больше {MAX_FILES} записей", code="bad_text")
+        async with self.uow_factory() as uow:
+            imp = Import(
+                id=uuid.uuid7(),
+                kind="text",
+                work_type=work_type,
+                file_name=f"Список текстом: {len(entries)} {L.plural(len(entries), ('запись', 'записи', 'записей'))}",
+                status="processing",
+                created_by=user.name,
+            )
+            uow.session.add(imp)
+            await uow.session.flush()
+            items = [
+                ImportItem(id=uuid.uuid7(), import_id=imp.id, n=n, ref=_short(entry), text=entry)
+                for n, entry in enumerate(entries, start=1)
+            ]
+            uow.session.add_all(items)
+            self._publish(uow, work_type, items)
+        self.outbox.kick()
+        logger.info("Список текстом принят", extra={"import_id": str(imp.id), "entries": len(entries)})
         return imp.id
 
     async def _create_archive(
@@ -430,9 +493,8 @@ class ImportService:
         """В той же транзакции, что и элементы: воркер не получит элемента, которого нет в базе,
         а элемент не останется «в очереди» без события, даже если шина лежит или сервис упал после коммита."""
         for it in items:
-            enqueue(
-                uow, ImportTopic.ITEM_CREATED, ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=work_type)
-            )
+            dto = ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=work_type, text=it.text)
+            enqueue(uow, ImportTopic.ITEM_CREATED, dto)
 
     # ---------- результат воркера ----------
 
@@ -496,7 +558,19 @@ class ImportService:
     async def _fill_item(
         self, uow: UnitOfWork, imp: Import, item: ImportItem, ai: dict[str, Any], ai_meta: dict
     ) -> None:
-        """Черновик из ответа воркера; без замечаний — сразу опубликованная карточка (текст закрыт до согласия)."""
+        """Черновик из ответа воркера; без замечаний — сразу опубликованная карточка (текст закрыт до согласия).
+        Запись списка текстом — строка шаблона от ИИ: черновик, как из таблицы, без автопубликации."""
+        if imp.kind == "text":
+            # все колонки шаблона: чего ИИ не нашёл — пусто, как незаполненная ячейка
+            record = {c: "" for c, _ in TEMPLATES[imp.work_type]} | (ai.get("record") or {})
+            if imp.work_type == "talk" and not record["Уровень"]:  # в программах уровень редко пишут
+                record["Уровень"] = L.CONF_LEVEL["national"]
+            names = [n for col in NAME_COLUMNS[imp.work_type] for n in records.split_names(record.get(col, ""))]
+            found = await self._match(uow, names)
+            ai_source: records.Source = lambda col: ai_meta.get(col) or {"source": "ai", "confidence": 0.4}  # noqa: E731
+            if work_id := await self._row(uow, imp, item, record, found, ai_source):
+                await self.works.refresh_search(uow, [work_id])
+            return
         work_type = ai.get("workType") if ai.get("workType") in ("vkr", "coursework") else imp.work_type
         try:
             # невалидный ответ откатит и профили студентов, заведённые под эту карточку

@@ -48,6 +48,10 @@ def person_dict(p: Person, *, admin: bool = False) -> dict:
         "academicDegree": p.academic_degree,
         "academicTitle": p.academic_title,
         "orcid": p.orcid,
+        "spin": p.spin,
+        "elibraryId": p.elibrary_id,
+        # страница автора в РИНЦ по AuthorID: SPIN-код ссылки не даёт
+        "elibraryUrl": f"https://elibrary.ru/author_profile.asp?id={p.elibrary_id}" if p.elibrary_id else None,
         "affiliation": p.affiliation,
         "photoUrl": photo_url(p.photo_key) if p.photo_key else None,
     }

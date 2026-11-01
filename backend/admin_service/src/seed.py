@@ -1,6 +1,7 @@
 """Начальные данные.
 
-python -m admin_service.src.seed people staff.csv — сотрудники и кафедры: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID».
+python -m admin_service.src.seed people staff.csv — сотрудники и кафедры: «ФИО», «Кафедра», «Должность», «Степень»,
+    «Звание», «ORCID», «SPIN», «AuthorID» (коды РИНЦ).
     Повторный запуск не создаёт дублей: человек ищется по exact_key.
 python -m admin_service.src.seed demo — демо-данные, перенос src/mocks/seed.ts с тем же генератором: фронт проверяется
     на настоящем бэке с теми же данными. Отказывается работать, если в базе уже есть работы, — прод не затрёт.
@@ -1030,6 +1031,8 @@ async def load_people(path: Path) -> None:
             person.academic_degree = rec.get("Степень") or person.academic_degree
             person.academic_title = rec.get("Звание") or person.academic_title
             person.orcid = rec.get("ORCID") or person.orcid
+            person.spin = rec.get("SPIN") or person.spin
+            person.elibrary_id = rec.get("AuthorID") or person.elibrary_id
             add_name(person, full)
             add_name(person, short_name(full))
     print(f"Создано: {created}, обновлено: {updated}")
