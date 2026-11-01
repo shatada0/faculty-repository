@@ -801,13 +801,19 @@ async def test_openalex_pages_without_cursor(monkeypatch: pytest.MonkeyPatch) ->
 
 
 async def test_rate_limited_source_is_retried(monkeypatch: pytest.MonkeyPatch) -> None:
-    answers = [httpx.Response(429, headers={"Retry-After": "0"}), httpx.Response(200, json={"message": {"DOI": "x"}})]
-    sent = []
+    answers = [httpx.Response(429, headers={"Retry-After": "2"}), httpx.Response(200, json={"message": {"DOI": "x"}})]
+    sent, waits = [], []
 
-    async def fake_get(self, url, params=None):
+    async def no_wait(seconds: float) -> None:
+        waits.append(seconds)
+
+    monkeypatch.setattr(crossref.asyncio, "sleep", no_wait)
+
+    async def fake_request(self, method, url, params=None):
         sent.append(url)
         return answers[len(sent) - 1]
 
-    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    monkeypatch.setattr(httpx.AsyncClient, "request", fake_request)
     assert await crossref._get("Crossref", "https://api.crossref.org/works/x") == {"message": {"DOI": "x"}}
     assert len(sent) == 2
+    assert 2 <= waits[0] <= 2.6  # Retry-After плюс джиттер до 30 %

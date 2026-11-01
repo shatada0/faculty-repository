@@ -181,6 +181,7 @@ def test_field_source_only_for_filled_fields() -> None:
 class FakeMessage:
     def __init__(self, body: bytes) -> None:
         self.body, self.message_id, self.redelivered, self.headers = body, "m", False, {}
+        self.content_type = "application/json"
         self.outcome: list = []
 
     async def ack(self) -> None:
@@ -203,3 +204,78 @@ async def test_retry_without_retry_queue_goes_to_dead_letters() -> None:
 
     await MessageBusConsumer(None, "q", {"t": (Empty, handler)})._on_message(message)
     assert message.outcome == [("reject", False)]
+
+
+async def test_retry_waits_with_jitter_before_retry_queue(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Пачка, упавшая разом, возвращается в очередь вразброс: пауза 0–½ TTL до переотправки."""
+    import shared.bus.consumer as consumer_module
+
+    async def handler(*_) -> None:
+        raise RetryMessageError("LLM лёг")
+
+    pauses, published = [], []
+
+    async def sleep(seconds: float) -> None:
+        pauses.append(seconds)
+
+    class Exchange:
+        async def publish(self, message, routing_key: str) -> None:
+            published.append((routing_key, message.headers))
+
+    class Channel:
+        default_exchange = Exchange()
+
+    class Empty(BaseModel):
+        pass
+
+    monkeypatch.setattr(consumer_module.asyncio, "sleep", sleep)
+    consumer = MessageBusConsumer(Channel(), "q", {"t": (Empty, handler)}, retry_ttl_seconds=30)
+    for _ in range(20):
+        body = BusMessage(type="t", source="test", trace_id="x", payload={}).model_dump_json().encode()
+        await consumer._on_message(FakeMessage(body))
+    assert len(published) == 20 and published[0] == ("q.retry", {"retries": 1})
+    assert all(0 <= p <= 15 for p in pauses) and len({round(p, 3) for p in pauses}) > 10  # вразброс, а не разом
+
+
+async def test_guard_limits_rate_and_opens_circuit() -> None:
+    import asyncio
+    import time
+
+    import httpx
+
+    from shared.resilience import CircuitOpenError, Guard
+
+    calls = []
+    status = {"code": 200}
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        calls.append(time.monotonic())
+        return httpx.Response(status["code"])
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+        g = Guard("Тест", per_second=20, reset_seconds=0.2)
+        for _ in range(3):
+            await g.request(http, "GET", "https://x.test/")
+        assert calls[-1] - calls[0] >= 2 / 20 * 0.9  # не чаще 20 в секунду
+
+        g = Guard("Тест", per_second=None, reset_seconds=0.2)
+        status["code"] = 404  # ошибка запроса, а не сервиса — не считается
+        for _ in range(6):
+            await g.request(http, "GET", "https://x.test/")
+        status["code"] = 503
+        for _ in range(5):
+            await g.request(http, "GET", "https://x.test/")
+        before = len(calls)
+        with pytest.raises(CircuitOpenError, match="временно недоступен"):
+            await g.request(http, "GET", "https://x.test/")
+        assert len(calls) == before  # разомкнута — сервис не трогаем
+
+        await asyncio.sleep(0.25)  # пауза вышла: одна проба, неудачная — снова разомкнута
+        await g.request(http, "GET", "https://x.test/")
+        with pytest.raises(CircuitOpenError):
+            await g.request(http, "GET", "https://x.test/")
+        await asyncio.sleep(0.25)
+        status["code"] = 200  # проба удалась — цепь замкнута
+        await g.request(http, "GET", "https://x.test/")
+        await g.request(http, "GET", "https://x.test/")
+        assert len(calls) == before + 3

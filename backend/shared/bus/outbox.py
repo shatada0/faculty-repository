@@ -6,6 +6,7 @@ enqueue() — в транзакции вместе с данными; OutboxRela
 """
 
 import asyncio
+import random
 
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -69,7 +70,8 @@ class OutboxRelay:
             except Exception:  # база недоступна — следующий проход
                 logger.exception("Outbox не опубликован")
             try:
-                async with asyncio.timeout(INTERVAL_SECONDS):
+                # ±20 %: экземпляры сервиса не ходят в outbox синхронно
+                async with asyncio.timeout(INTERVAL_SECONDS * random.uniform(0.8, 1.2)):  # noqa: S311
                     await self._wake.wait()
             except TimeoutError:
                 pass

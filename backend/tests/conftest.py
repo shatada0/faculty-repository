@@ -41,9 +41,16 @@ import shared.uow as uow_module
 from admin_service.src import refdata, seed
 from shared.auth.models import User
 from shared.auth.session import SessionUser
+from shared.resilience import reset_all
 from shared.uow import uow_write_factory
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture(autouse=True)
+def closed_circuits() -> None:
+    """Автоматы внешних сервисов — в памяти процесса: тест с падающим сервисом не должен разомкнуть их следующему."""
+    reset_all()
 
 
 @pytest.fixture(scope="session")

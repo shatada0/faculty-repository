@@ -16,8 +16,10 @@ import httpx
 from sqlalchemy import select
 
 from shared.config import app_config
+from shared.exceptions import UpstreamError
 from shared.logging import get_logger, setup_logging
 from shared.repository.works_repository import WorkRepository
+from shared.resilience import guard
 from shared.uow import uow_ro_factory, uow_write_factory
 from shared.works import Work
 
@@ -36,14 +38,14 @@ def _batchable(doi: str) -> bool:
 
 async def crossref(http: httpx.AsyncClient, dois: list[str]) -> dict[str, int]:
     if len(dois) == 1 and not _batchable(dois[0]):
-        r = await http.get(f"{CROSSREF}/{quote(dois[0], safe='')}")
+        r = await guard("Crossref").request(http, "GET", f"{CROSSREF}/{quote(dois[0], safe='')}")
         if r.status_code == 404:
             return {}
         r.raise_for_status()
         m = r.json()["message"]
         return {m["DOI"].lower(): m.get("is-referenced-by-count", 0)}
     params = {"filter": ",".join(f"doi:{d}" for d in dois), "rows": len(dois), "select": "DOI,is-referenced-by-count"}
-    r = await http.get(CROSSREF, params=params)
+    r = await guard("Crossref").request(http, "GET", CROSSREF, params=params)
     r.raise_for_status()
     return {i["DOI"].lower(): i.get("is-referenced-by-count", 0) for i in r.json()["message"]["items"]}
 
@@ -53,13 +55,13 @@ async def openalex(http: httpx.AsyncClient, dois: list[str]) -> dict[str, int]:
     if app_config.openalex_api_key:
         mailto["api_key"] = app_config.openalex_api_key
     if len(dois) == 1 and not _batchable(dois[0]):
-        r = await http.get(f"{OPENALEX}/doi:{quote(dois[0], safe='')}", params=mailto)
+        r = await guard("OpenAlex").request(http, "GET", f"{OPENALEX}/doi:{quote(dois[0], safe='')}", params=mailto)
         if r.status_code == 404:
             return {}
         r.raise_for_status()
         return {dois[0]: r.json().get("cited_by_count", 0)}
     params = {"filter": "doi:" + "|".join(dois), "per-page": len(dois), "select": "doi,cited_by_count", **mailto}
-    r = await http.get(OPENALEX, params=params)
+    r = await guard("OpenAlex").request(http, "GET", OPENALEX, params=params)
     r.raise_for_status()
     return {
         i["doi"].lower().removeprefix("https://doi.org/"): i.get("cited_by_count", 0)
@@ -96,7 +98,7 @@ async def update(http: httpx.AsyncClient, sources: dict[str, Fetch] = SOURCES) -
         for source, fetch in sources.items():
             try:
                 counts = await fetch(http, batch)
-            except (httpx.HTTPError, ValueError, KeyError) as e:
+            except (httpx.HTTPError, ValueError, KeyError, UpstreamError) as e:  # UpstreamError — цепь разомкнута
                 errors += 1
                 logger.warning("Источник цитирований не ответил", extra={"source": source, "error": repr(e)})
                 continue

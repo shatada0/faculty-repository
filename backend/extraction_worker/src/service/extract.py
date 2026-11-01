@@ -17,6 +17,7 @@ from extraction_worker.src.service.pdf_text import PASSWORD_EXIT
 from shared.config import llm_config
 from shared.logging import get_logger
 from shared.people.names import parse_name, translit
+from shared.resilience import CircuitOpenError, guard
 from shared.works.labels import CONF_LEVEL, PUB_KIND
 
 logger = get_logger(__name__)
@@ -313,7 +314,9 @@ async def _chat[M: BaseModel](http: httpx.AsyncClient, prompt: str, text: str, m
     started = time.perf_counter()
     schema = model.model_json_schema() | {"required": list(model.model_fields)}
     try:
-        response = await http.post(
+        response = await guard("LLM").request(
+            http,
+            "POST",
             f"{llm_config.url}/v1/chat/completions",
             json={
                 "model": llm_config.model,
@@ -331,6 +334,9 @@ async def _chat[M: BaseModel](http: httpx.AsyncClient, prompt: str, text: str, m
             },
             timeout=llm_config.timeout_seconds,
         )
+    except CircuitOpenError as e:  # LLM только что падал подряд: сообщение вернётся через очередь повторов
+        logger.warning("LLM: цепь разомкнута", extra=log | {"url": llm_config.url})
+        raise LLMUnavailable(str(e)) from e
     except (httpx.ReadTimeout, httpx.WriteTimeout) as e:  # сервер жив, но не успел: повтор упрётся в то же
         logger.warning("LLM: таймаут", extra=log | {"url": llm_config.url, "timeout": llm_config.timeout_seconds})
         raise ItemError("ИИ не ответил") from e

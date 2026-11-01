@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import random
 import re
 import time
 from typing import Any
@@ -12,6 +13,7 @@ import httpx
 from shared.config import app_config
 from shared.exceptions import BadRequestError, NotFoundError, UpstreamError
 from shared.logging import get_logger
+from shared.resilience import guard
 from shared.works.schemas import issn_key
 
 logger = get_logger(__name__)
@@ -95,7 +97,11 @@ def from_crossref(message: dict[str, Any]) -> dict[str, Any]:
 async def _get(
     source: str, url: str, params: dict | None = None, headers: dict | None = None, *, follow: bool = False
 ) -> dict | None:
-    """GET JSON с логом и понятной ошибкой; 404 → None. httpx не следует редиректам."""
+    """GET JSON с логом и понятной ошибкой; 404 → None. httpx не следует редиректам.
+
+    source — имя сервиса для охранника (shared.resilience): частота запросов и автомат. Цепь разомкнута —
+    сразу CircuitOpenError (это UpstreamError, 502), без ожидания таймаута лежащего сервиса.
+    """
     agent = (
         f"faculty-repository (mailto:{app_config.crossref_mailto})"
         if app_config.crossref_mailto
@@ -108,11 +114,13 @@ async def _get(
             timeout=15, headers={"User-Agent": agent, **(headers or {})}, follow_redirects=follow
         ) as http:
             for attempt in range(RETRIES_429 + 1):
-                response = await http.get(url, params=params)
+                response = await guard(source).request(http, "GET", url, params=params)  # частота и автомат
                 if response.status_code != 429 or attempt == RETRIES_429:
                     break
-                # Crossref и OpenAlex ограничивают частоту: ждём, сколько просят, и повторяем
-                wait = min(float(response.headers.get("Retry-After", "") or 2 ** (attempt + 1)), 30)
+                # Crossref и OpenAlex ограничивают частоту: ждём, сколько просят, и повторяем. Джиттер +0–30 %:
+                # пачки и реплики, получившие 429 одновременно, не возвращаются тоже одновременно.
+                base = float(response.headers.get("Retry-After", "") or 2 ** (attempt + 1))
+                wait = min(base * random.uniform(1, 1.3), 30)  # noqa: S311 — джиттер, не криптография
                 logger.info(f"{source}: слишком часто, ждём", extra={"url": url, "seconds": wait})
                 await asyncio.sleep(wait)
     except (httpx.HTTPError, ValueError) as e:  # ValueError — Retry-After датой, а не секундами

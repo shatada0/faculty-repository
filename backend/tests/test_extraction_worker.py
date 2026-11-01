@@ -385,3 +385,19 @@ async def test_handler_routes_text_items_to_llm(monkeypatch: pytest.MonkeyPatch)
     dto = ItemCreatedDTO(item_id=uuid.uuid4(), work_type="publication", text="Запись")
     await handler(dto, Delivery(False, 0, 0))
     assert publisher.published[0][1].fields == {"record": {"Название": "Запись"}}
+
+
+async def test_llm_circuit_opens_and_requeues() -> None:
+    attempts = []
+
+    def down(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        raise httpx.ConnectError("нет LLM")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(down)) as http:
+        for _ in range(5):
+            with pytest.raises(extract_module.LLMUnavailable):
+                await extract_module.ask_llm(http, "текст", {})
+        with pytest.raises(extract_module.LLMUnavailable, match="временно недоступен"):
+            await extract_module.ask_llm(http, "текст", {})  # без похода к LLM: сообщение уйдёт в повтор
+    assert len(attempts) == 5

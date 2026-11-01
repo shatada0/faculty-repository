@@ -1,6 +1,8 @@
 """Потребление событий: маршрутизация по типу, контекст из конверта, dead letters и очередь повторов."""
 
+import asyncio
 import json
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -128,10 +130,14 @@ class MessageBusConsumer:
                     )
                     await message.reject(requeue=False)
                     return
+                # Джиттер 0–½ TTL до переотправки: у очереди повторов TTL общий, и пачка, упавшая разом (LLM лёг),
+                # иначе вернулась бы тоже разом. Пока ждём, сообщение без ack держит слот prefetch — это и нужно.
+                pause = random.uniform(0, self._retry_ttl / 2)  # noqa: S311 — джиттер, не криптография
                 logger.warning(
                     "Временная ошибка — повтор через очередь",
-                    extra=log | {"reason": str(e), "retries": delivery.retries},
+                    extra=log | {"reason": str(e), "retries": delivery.retries, "jitter_s": round(pause, 1)},
                 )
+                await asyncio.sleep(pause)
                 await self._channel.default_exchange.publish(
                     aio_pika.Message(
                         message.body,

@@ -1,0 +1,27 @@
+# Внешний сервис (Crossref, ORCID, OpenAlex, Open Library, LLM) падал пять раз подряд — shared.resilience разомкнул
+# цепь, и запросы к нему сразу отвечают «временно недоступен». Алерт — на любое размыкание за 15 минут.
+apiVersion: 1
+groups:
+  - orgId: 1
+    name: upstreams
+    folder: Репозиторий
+    interval: 5m
+    rules:
+      - uid: upstream-circuit-open
+        title: Внешний сервис недоступен
+        condition: C
+        for: 0m
+        noDataState: OK
+        execErrState: Error
+        annotations: {summary: "Цепь разомкнута: {{ $labels.upstream }} падал несколько раз подряд"}
+        data:
+          - refId: A
+            relativeTimeRange: {from: 900, to: 0}
+            datasourceUid: loki
+            model:
+              refId: A
+              queryType: instant
+              expr: 'sum by (upstream) (count_over_time({service=~"admin_service|extraction_worker"} |= "Цепь разомкнута" | json | __error__="" [15m]))'
+          - refId: C
+            datasourceUid: __expr__
+            model: {refId: C, type: threshold, expression: A, conditions: [{evaluator: {type: gt, params: [0]}}]}
