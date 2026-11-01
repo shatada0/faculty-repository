@@ -6,7 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, Text, and_, cast, func, or_, select, text
-from sqlalchemy.dialects.postgresql import TSQUERY
+from sqlalchemy.dialects.postgresql import TSQUERY, insert
 from sqlalchemy.orm import Load, selectinload
 from sqlalchemy.sql import Select
 
@@ -14,7 +14,7 @@ from shared.auth.models import User
 from shared.people import PersonName
 from shared.refdata import Department, Journal
 from shared.uow import UnitOfWork
-from shared.works import Material, Work, WorkPerson
+from shared.works import Material, Work, WorkCitation, WorkPerson
 from shared.works.schemas import title_key
 
 # Веса как в моках: название, ключевые слова и люди, аннотация, журнал/конференция/направление.
@@ -146,26 +146,53 @@ class WorkRepository:
         await uow.session.flush()
         await uow.session.execute(REFRESH_SEARCH, {"ids": list(ids)})
 
+    async def save_citations(self, uow: UnitOfWork, rows: Iterable[tuple[UUID, str, int]]) -> int:
+        """(работа, источник, число) → work_citations; в API citations — максимум по источникам."""
+        values = [{"work_id": w, "source": src, "count": n} for w, src, n in rows]
+        if not values:
+            return 0
+        stmt = insert(WorkCitation).values(values)
+        await uow.session.execute(
+            stmt.on_conflict_do_update(
+                index_elements=["work_id", "source"], set_={"count": stmt.excluded.count, "updated_at": func.now()}
+            )
+        )
+        return len(values)
+
     async def journal_lists(self, uow: UnitOfWork, works: Iterable[Work]) -> dict[UUID, list[str]]:
-        """Коды списков журнала: по ISSN, а если ISSN нет или его нет в справочнике — по точному названию журнала.
-        Фасет journalList (search._journal_lists) считает так же."""
+        """Коды списков журнала: по печатному или электронному ISSN, а если ISSN нет или его нет в справочнике —
+        по точному названию журнала. Фасет journalList (search._journal_lists) считает так же."""
         pubs = [w for w in works if w.type == "publication"]
         issns = {w.issn for w in pubs if w.issn}
         venues = {w.details.get("venue") for w in pubs if w.details.get("venue")}
         if not issns and not venues:
             return {}
         rows = (
-            await uow.session.execute(select(Journal).where(or_(Journal.issn.in_(issns), Journal.name.in_(venues))))
+            await uow.session.execute(
+                select(Journal).where(or_(Journal.issn.in_(issns), Journal.eissn.in_(issns), Journal.name.in_(venues)))
+            )
         ).scalars()
         by_issn, by_name = {}, {}
         for j in rows:
             by_issn[j.issn] = j.lists
+            if j.eissn:
+                by_issn[j.eissn] = j.lists
             by_name[j.name] = j.lists
         return {
             w.id: lists
             for w in pubs
             if (lists := by_issn[w.issn] if w.issn in by_issn else by_name.get(w.details.get("venue")))
         }
+
+    async def journal_issn(self, uow: UnitOfWork, issns: list[str]) -> str | None:
+        """Первый ISSN из списка, который есть в справочнике журналов — печатным или электронным."""
+        if not issns:
+            return None
+        rows = await uow.session.execute(
+            select(Journal.issn, Journal.eissn).where(or_(Journal.issn.in_(issns), Journal.eissn.in_(issns)))
+        )
+        known = {x for row in rows for x in row if x}
+        return next((i for i in issns if i in known), None)
 
     async def find_duplicate(
         self, uow: UnitOfWork, work_type: str, title: str, year: int | None, exclude: UUID | None = None

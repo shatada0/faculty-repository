@@ -6,7 +6,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 
 from admin_service.src.api.schemas import MatchRequest, MergeRequest
-from admin_service.src.dependencies import Moderator, People, Q
+from admin_service.src.dependencies import Moderator, People, Q, Works
 from admin_service.src.dto import PersonIn
 from shared.auth.session import require_moderator
 
@@ -31,8 +31,8 @@ async def people(
 
 
 @router.post("/people", status_code=201)
-async def create_person(body: PersonIn, service: People) -> dict:
-    return await service.create(body)
+async def create_person(body: PersonIn, service: People, user: Moderator) -> dict:
+    return await service.create(body, user)
 
 
 @router.post("/people/match")
@@ -46,10 +46,16 @@ async def person_card(service: People, person_id: UUID) -> dict:
 
 
 @router.patch("/people/{person_id:uuid}")
-async def patch_person(body: PersonIn, service: People, person_id: UUID) -> dict:
-    return await service.patch(person_id, body)
+async def patch_person(body: PersonIn, service: People, user: Moderator, person_id: UUID) -> dict:
+    return await service.patch(person_id, body, user)
 
 
 @router.post("/people/{person_id:uuid}/merge")
 async def merge_people(body: MergeRequest, service: People, user: Moderator, person_id: UUID) -> dict:
     return await service.merge(person_id, body.fromId, user)
+
+
+@router.post("/people/{person_id:uuid}/orcid-import")
+async def orcid_import(service: Works, user: Moderator, person_id: UUID) -> dict:
+    """Работы с DOI из профиля ORCID — черновиками публикаций, заполненными по Crossref."""
+    return await service.import_orcid(person_id, user)

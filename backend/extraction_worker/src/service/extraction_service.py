@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from extraction_worker.src.service.extract import PDF_TIMEOUT, ItemError, LLMUnavailable, extract
+from extraction_worker.src.service.extract import OCR_TIMEOUT, PDF_TIMEOUT, ItemError, LLMUnavailable, extract
 from shared.bus.consumer import Delivery
 from shared.bus.contracts import ImportTopic, ItemCreatedDTO, ItemExtractedDTO
 from shared.bus.publisher import MessageBusPublisher
@@ -18,8 +18,8 @@ from shared.storage import Storage
 
 logger = get_logger(__name__)
 
-# S3 + pypdf + LLM: своё время на каждую стадию и запас; иначе общий таймаут срабатывает раньше LLM-ного
-ITEM_TIMEOUT = PDF_TIMEOUT + llm_config.timeout_seconds + 30
+# S3 + pypdf + OCR скана + LLM: своё время на каждую стадию и запас; иначе общий таймаут срабатывает раньше LLM-ного
+ITEM_TIMEOUT = PDF_TIMEOUT + OCR_TIMEOUT + llm_config.timeout_seconds + 30
 # 20 × 30 с ≈ 10 минут: столько vLLM может грузить модель (healthcheck llm). Задержку не менять:
 # TTL уже объявленной очереди повторов RabbitMQ не даст переопределить — воркер не стартует.
 MAX_RETRIES = 20

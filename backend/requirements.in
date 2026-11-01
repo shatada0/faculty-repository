@@ -16,3 +16,4 @@ httpx
 openpyxl
 defusedxml
 pypdf
+pypdfium2

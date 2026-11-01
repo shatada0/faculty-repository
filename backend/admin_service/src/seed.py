@@ -1018,7 +1018,8 @@ async def load_people(path: Path) -> None:
                 continue
             person = await people.match_exact(uow, full)
             if person is None:
-                person = Person(kind="staff", full_name=full)
+                # names=[] сразу: ensure_department ниже сбрасывает сессию, и пустой список иначе грузился бы лениво
+                person = Person(kind="staff", full_name=full, names=[])
                 uow.session.add(person)
                 created += 1
             else:

@@ -5,7 +5,7 @@ python -m admin_service.src.refdata init — заполняет пустые с�
 
 Upsert в одной транзакции; строки не удаляются, поэтому коды, на которые ссылаются работы, остаются.
 Форматы csv (разделитель «;», первая строка — заголовок):
-  journals:    issn;name;lists       — lists через запятую: white2,vak_k1,scopus_q2
+  journals:    issn;name;lists[;eissn] — lists через запятую: white2,vak_k1,scopus_q2; eissn — электронный ISSN
   classifiers: scheme;code;name      — scheme: grnti | oecd | wos | asjc
   directions:  code;name[;subjects]  — subjects через запятую: grnti:50.41,oecd:1.02 — рубрики, которые импорт
                ставит ВКР и курсовым этого направления; без колонки рубрики направлений не меняются
@@ -29,11 +29,11 @@ from shared.works.schemas import issn_key
 logger = get_logger("refdata")
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures"
 TABLES: dict[str, tuple[type[Base], list[str]]] = {
-    "journals": (Journal, ["issn", "name", "lists"]),
+    "journals": (Journal, ["issn", "name", "lists", "eissn"]),
     "classifiers": (Classifier, ["scheme", "code", "name"]),
     "directions": (Direction, ["code", "name", "subjects"]),
 }
-OPTIONAL = {"subjects"}
+OPTIONAL = {"subjects", "eissn"}
 
 
 def read_rows(kind: str, text: str) -> list[dict]:
@@ -49,6 +49,8 @@ def read_rows(kind: str, text: str) -> list[dict]:
                 values[c] = [x.strip() for x in values[c].split(",") if x.strip()]
         if kind == "journals":
             values["issn"] = issn_key(values["issn"])  # в том же виде, что у работ
+            if "eissn" in values:
+                values["eissn"] = issn_key(values["eissn"]) or None
         out.append(values)
     return out
 

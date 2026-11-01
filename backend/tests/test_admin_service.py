@@ -423,3 +423,240 @@ async def test_department_only_from_reference(demo: dict) -> None:
     assert saved["department"] == "Кафедра информационных систем"
     async with uow_ro_factory() as uow:
         assert await uow.session.get(Department, "123") is None
+
+
+# ---------- ORCID, Crossref и цитирования (проверка на работах И. В. Оселедца, ORCID 0000-0003-2071-2163) ----------
+
+
+def test_crossref_mapping_orcid_article_number_language() -> None:
+    got = crossref.from_crossref(
+        {
+            "title": ["Scalable Cross-Entropy Loss"],
+            "type": "journal-article",
+            "article-number": "165116",
+            "is-referenced-by-count": 744,
+            "author": [
+                {"given": "Ivan", "family": "Oseledets", "ORCID": "https://orcid.org/0000-0003-2071-2163"},
+                {"given": "Gleb", "family": "Mezentsev"},
+            ],
+        }
+    )
+    assert got["authors"] == ["Oseledets I.", "Mezentsev G."]
+    assert got["author_orcids"] == ["0000-0003-2071-2163", None]
+    assert got["pages"] == "165116"  # у Physical Review вместо страниц — номер статьи
+    assert got["language"] == "en"  # Crossref язык не дал: по названию, а не шаблонное «ru»
+    assert got["citations"] == 744
+    assert crossref.from_crossref({"title": ["Ускоренный алгоритм"]})["language"] == "ru"
+    both = crossref.from_crossref(
+        {
+            "ISSN": ["2470-0029", "2470-0010"],
+            "issn-type": [{"type": "electronic", "value": "2470-0029"}, {"type": "print", "value": "2470-0010"}],
+        }
+    )
+    assert (both["issn"], both["issns"]) == ("2470-0010", ["2470-0010", "2470-0029"])  # печатный первым
+
+
+def test_orcid_checksum() -> None:
+    from admin_service.src.service.people_service import orcid_checksum_ok
+
+    assert orcid_checksum_ok("0000-0003-2071-2163") and orcid_checksum_ok("0000-0002-1825-0097")
+    assert orcid_checksum_ok("0000-0002-1694-233X")
+    assert not orcid_checksum_ok("0000-0003-2071-2164")
+
+
+async def test_citation_sources_batch_and_parse() -> None:
+    from admin_service.src import citations
+
+    dois = [f"10.1/{i}" for i in range(51)] + ["10.1002/(sici)1,2"]
+    assert [len(b) for b in citations.batches(dois)] == [50, 1, 1]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "api.crossref.org":
+            items = [{"DOI": "10.1/A", "is-referenced-by-count": 7}]
+            return httpx.Response(200, json={"message": {"items": items}})
+        return httpx.Response(200, json={"results": [{"doi": "https://doi.org/10.1/a", "cited_by_count": 9}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
+        assert await citations.crossref(http, ["10.1/a"]) == {"10.1/a": 7}
+        assert await citations.openalex(http, ["10.1/a"]) == {"10.1/a": 9}
+
+
+async def test_doi_links_author_by_orcid_and_h_index(demo: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    from admin_service.src import citations
+
+    s = works()
+    people = PeopleService(uow_write_factory, PersonRepository(), WorkRepository())
+    person = await people.create(
+        PersonIn(fullName="Оселедец Иван Валерьевич", kind="staff", orcid="0000-0003-2071-2163")
+    )
+    with pytest.raises(BadRequestError, match="контрольный"):
+        await people.create(PersonIn(fullName="Опечатка", kind="staff", orcid="0000-0003-2071-2164"))
+    counts = {"10.9999/a": 801, "10.9999/b": 456, "10.9999/c": 22, "10.9999/d": 3}
+
+    async def lookup(doi: str) -> dict:
+        orcid = "0000-0003-2071-2163" if doi.endswith("a") else None  # ORCID в Crossref есть не у всех статей
+        return {
+            "title": f"Tensor work {doi}",
+            "authors": ["Khrulkov V.", "Oseledets I."],
+            "author_orcids": [None, orcid],
+            "venue": "SIAM Journal",
+            "year": 2018,
+            "kind": "journal_article",
+            "citations": counts[doi] - 1,
+        }
+
+    monkeypatch.setattr(crossref, "lookup", lookup)
+    ids = []
+    for doi in counts:  # первая — с ORCID: написание «Oseledets I.» запоминается, остальные сопоставятся по нему
+        created = await s.create(s.template("publication"), demo["user"])
+        res = await s.fill_from_doi(uuid.UUID(created["id"]), doi, [], demo["user"])
+        assert res["work"]["authors"][1]["personId"] == person["id"], doi
+        assert res["work"]["citations"] == counts[doi] - 1  # Crossref сразу при заполнении
+        await s.publish(uuid.UUID(created["id"]), demo["user"])
+        ids.append(created["id"])
+    assert "Oseledets I." in (await people.card(uuid.UUID(person["id"])))["aliases"]
+
+    async def openalex(http: httpx.AsyncClient, dois: list[str]) -> dict[str, int]:
+        return {d: counts[d] for d in dois if d in counts}
+
+    async def crossref_down(http: httpx.AsyncClient, dois: list[str]) -> dict[str, int]:
+        raise httpx.ConnectError("нет сети")
+
+    stats = await citations.update(None, {"crossref": crossref_down, "openalex": openalex})
+    assert stats["errors"] >= 1 and stats["rows"] >= len(counts)
+    metrics = await catalog().metrics(uuid.UUID(person["id"]), None)
+    h, total = (int(t["value"]) for t in metrics["items"])
+    assert (h, total) == (3, 801 + 456 + 22 + 3)  # максимум по источникам: OpenAlex на единицу больше Crossref
+
+
+async def test_orcid_works_parsed_self_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    def ext(value: str, rel: str = "self", kind: str = "doi") -> dict:
+        return {"external-id-type": kind, "external-id-value": value, "external-id-relationship": rel}
+
+    body = {
+        "group": [
+            {"external-ids": {"external-id": [ext("https://doi.org/10.1137/090752286"), ext("1234", kind="eid")]}},
+            {"external-ids": {"external-id": [ext("10.1137/090752286")]}},  # та же работа из другого источника
+            {"external-ids": {"external-id": [ext("10.1007/978-3-030", rel="part-of"), ext("10.1007/X_5")]}},
+            {"external-ids": None},
+        ]
+    }
+
+    async def get(source: str, url: str, params: dict | None = None, headers: dict | None = None) -> dict:
+        assert url == "https://pub.orcid.org/v3.0/0000-0003-2071-2163/works" and headers == {
+            "Accept": "application/json"
+        }
+        return body
+
+    monkeypatch.setattr(crossref, "_get", get)
+    assert await crossref.orcid_dois("0000-0003-2071-2163") == ["10.1137/090752286", "10.1007/x_5"]
+
+
+async def test_import_from_orcid(demo: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    s = works()
+    people = PeopleService(uow_write_factory, PersonRepository(), WorkRepository())
+    nobody = await people.create(PersonIn(fullName="Безорсидов Пётр Ильич", kind="staff"), demo["user"])
+    with pytest.raises(BadRequestError, match="ORCID"):
+        await s.import_orcid(uuid.UUID(nobody["id"]), demo["user"])
+
+    person = await people.create(
+        PersonIn(fullName="Рахуба Максим Владимирович", kind="staff", orcid="0000-0002-1825-0097"), demo["user"]
+    )
+    known = await s.create(s.template("publication") | {"title": "Уже в базе", "doi": "10.7777/known"}, demo["user"])
+
+    async def orcid_dois(orcid: str) -> list[str]:
+        assert orcid == "0000-0002-1825-0097"
+        return ["10.7777/a", "10.7777/known", "10.7777/gone", "10.7777/dup"]
+
+    async def lookup_many(dois: list[str]) -> dict[str, dict]:
+        assert "10.7777/known" not in dois  # известные DOI в Crossref не спрашиваем
+        card = {"authors": ["Rakhuba M. V.", "Smith J."], "venue": "J. Comp. Phys.", "year": 2016}
+        out = {"10.7777/a": card | {"title": "Tensor trains", "kind": "journal_article", "citations": 5}}
+        out["10.7777/dup"] = card | {"title": "Уже в базе", "year": known["year"]}
+        return {d: out[d] for d in dois if d in out}
+
+    monkeypatch.setattr(crossref, "orcid_dois", orcid_dois)
+    monkeypatch.setattr(crossref, "lookup_many", lookup_many)
+    res = await s.import_orcid(uuid.UUID(person["id"]), demo["user"])
+    assert res == {
+        "found": 4,
+        "created": 2,
+        "known": 1,
+        "notFound": ["10.7777/gone"],
+        "failed": [],
+        "message": "DOI в профиле ORCID: 4. Новых черновиков: 2, уже в базе: 1, нет в Crossref: 1.",
+    }
+
+    card = await people.card(uuid.UUID(person["id"]))
+    titles = {w["title"]: w for w in card["works"]}  # «Rakhuba M. V.» сопоставлен по транслиту
+    assert set(titles) == {"Tensor trains", "Уже в базе"} and titles["Tensor trains"]["status"] == "draft"
+    work = await s.get(uuid.UUID(titles["Tensor trains"]["id"]))
+    assert work["doi"] == "10.7777/a" and work["fieldMeta"]["title"]["source"] == "doi" and work["citations"] == 5
+    dup = next(w for w in card["works"] if w["id"] != work["id"])
+    assert (await s.get(uuid.UUID(dup["id"])))["duplicateOf"] == known["id"]
+
+    again = await s.import_orcid(uuid.UUID(person["id"]), demo["user"])
+    assert (again["created"], again["known"]) == (0, 3)
+
+
+def test_initials_fit() -> None:
+    from shared.repository.people_repository import initials_fit, is_latin
+
+    assert initials_fit("Oseledets I.", "Оселедец Иван Валерьевич")
+    assert initials_fit("I. V. Oseledets", "Оселедец Иван Валерьевич")
+    assert not initials_fit("Oseledets I. A.", "Оселедец Иван Валерьевич")
+    assert is_latin("Oseledets I.") and not is_latin("Оселедец И.") and not is_latin("Oseledets И.")
+
+
+async def test_latin_spelling_matches_russian_name_and_relinks_at_once(demo: dict) -> None:
+    s = works()
+    people = PeopleService(uow_write_factory, PersonRepository(), WorkRepository())
+    # статья пришла раньше, чем человека завели: автор нераспознан
+    early = await s.create(
+        {
+            "type": "publication",
+            "title": "Ранняя статья",
+            "authors": [{"displayName": "Khrulkova V. S.", "kind": "external"}],
+        },
+        demo["user"],
+    )
+    assert early["authors"][0]["personId"] is None
+    v = await people.create(PersonIn(fullName="Хрулькова Валентина Сергеевна", kind="staff"), demo["user"])
+    assert (await s.get(uuid.UUID(early["id"])))["authors"][0]["personId"] == v["id"]  # сразу, без «Это он»
+    assert "Khrulkova V. S." in (await people.card(uuid.UUID(v["id"])))["aliases"]
+
+    async with uow_write_factory() as uow:
+        repo = PersonRepository()
+        got = await repo.match_many(uow, ["Khrulkova V.", "V. S. Khrulkova", "Khrulkova A."])
+    assert {n: p.full_name for n, p in got.items()} == {
+        "Khrulkova V.": "Хрулькова Валентина Сергеевна",
+        "V. S. Khrulkova": "Хрулькова Валентина Сергеевна",
+    }
+    # однофамилица с той же первой буквой: «Khrulkova V.» уже не угадываем, а по отчеству различаем
+    await people.create(PersonIn(fullName="Хрулькова Вера Петровна", kind="staff"), demo["user"])
+    async with uow_write_factory() as uow:
+        got = await PersonRepository().match_many(uow, ["Khrulkova V.", "Khrulkova V. P."])
+    assert {n: p.full_name for n, p in got.items()} == {"Khrulkova V. P.": "Хрулькова Вера Петровна"}
+
+
+async def test_seed_people_from_staff_csv(demo: dict, tmp_path) -> None:
+    """Таблица кафедры: новый человек с новой кафедрой и ORCID, существующий — обновляется; повтор не дублирует."""
+    from admin_service.src import seed
+
+    path = tmp_path / "staff.csv"
+    path.write_text(
+        "ФИО;Кафедра;Должность;Степень;Звание;ORCID\n"
+        "Ноздрин Вадим Станиславович;Факультет информационных технологий;Доцент;Кандидат наук;;0000-0001-6114-0435\n"
+        "Орлов Дмитрий Сергеевич;;Профессор;;;\n",
+        encoding="utf-8",
+    )
+    await seed.load_people(path)  # раньше: MissingGreenlet на новом человеке
+    await seed.load_people(path)
+    async with uow_ro_factory() as uow:
+        rows = (
+            await uow.session.execute(select(Person).where(Person.full_name == "Ноздрин Вадим Станиславович"))
+        ).scalars()
+        rows = list(rows)
+        orlov = await uow.session.get(Person, demo["ids"]["p-s1"])
+    assert len(rows) == 1 and rows[0].orcid == "0000-0001-6114-0435" and "Ноздрин В. С." in rows[0].aliases
+    assert rows[0].department == "Факультет информационных технологий" and orlov.position == "Профессор"

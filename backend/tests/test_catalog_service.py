@@ -3,15 +3,18 @@
 import uuid
 
 import pytest
+from sqlalchemy import any_, select
 
 from admin_service.src.service.works_service import WorkService
-from catalog_service.src.service.catalog_service import CatalogService
+from catalog_service.src.service.catalog_service import CatalogService, _parts
 from catalog_service.src.service.gost import gost_citation
 from catalog_service.src.service.view import work_view
 from shared.exceptions import NotFoundError
+from shared.refdata import Journal
 from shared.repository.people_repository import PersonRepository
 from shared.repository.works_repository import WorkRepository
 from shared.uow import uow_ro_factory, uow_write_factory
+from shared.works import Work
 from shared.works.schemas import issn_key
 from tests.fakes import FakeStorage
 
@@ -226,6 +229,22 @@ async def test_journal_lists_card_and_facet_agree(demo: dict) -> None:
     assert pubs["total"] <= 100 and on_cards == facet.get("white1", 0) > 0
 
 
+async def test_journal_found_by_electronic_issn(demo: dict) -> None:
+    """Crossref отдал электронный ISSN, а справочник ведёт журнал по печатному: списки всё равно находятся."""
+    async with uow_write_factory() as uow:
+        j = (await uow.session.execute(select(Journal).where(any_(Journal.lists) == "white1").limit(1))).scalar_one()
+        j.eissn = "9999-999X"
+        w = (
+            await uow.session.execute(select(Work).where(Work.issn == j.issn, Work.status == "published").limit(1))
+        ).scalar_one()
+        w.issn = "9999-999X"
+        assert await WorkRepository().journal_issn(uow, ["1111-1111", "9999-999X"]) == "9999-999X"
+        assert await WorkRepository().journal_issn(uow, ["1111-1111"]) is None
+    card = await catalog().work(w.id)
+    assert "Белый список, уровень 1" in card["journalLists"]
+    await test_journal_lists_card_and_facet_agree(demo)
+
+
 async def test_file_only_for_open_text(demo: dict) -> None:
     c = catalog()
     items = (await c.catalog({}, q=None, type_=None, exclude=None, sort=None, page=1, page_size=100))["items"]
@@ -251,3 +270,47 @@ async def test_client_errors_reject_foreign_origin() -> None:
         assert r.status_code == 403
         r = await client.post("/api/client-errors", json={"message": "x"}, headers={"Origin": "https://localhost"})
         assert r.status_code == 204
+
+
+def test_parts_mark_words_found_with_typo() -> None:
+    hits = lambda parts: [p["text"] for p in parts if p["hit"]]  # noqa: E731
+    assert hits(_parts("Нейронные сети для графов", "нейроные")) == ["Нейронные"]  # ts_headline её не отметил
+    assert hits(_parts("Свёрточных нейронных сетей", "нецронных")) == ["нейронных"]
+    assert hits(_parts("\x01Нейронные\x02 сети", "нейр")) == ["Нейронные"]  # префикс отметил ts_headline
+    assert hits(_parts("Нейронные сети", '"нейроные"')) == []  # кавычки — точный поиск, похожие не ищутся
+    parts = _parts("Нейронные сети: обзор", "нейроные")
+    assert "".join(p["text"] for p in parts) == "Нейронные сети: обзор" and len(parts) == 2
+
+
+async def test_works_list_docx(demo: dict) -> None:
+    import io
+    import zipfile
+
+    from defusedxml import ElementTree
+
+    c = catalog()
+    orlov = demo["ids"]["p-s1"]
+
+    def paragraphs(body: bytes) -> list[str]:
+        xml = zipfile.ZipFile(io.BytesIO(body)).read("word/document.xml")
+        return [
+            "".join(t.text or "" for t in p.iter() if t.tag.endswith("}t"))
+            for p in ElementTree.fromstring(xml).iter()
+            if p.tag.endswith("}p")
+        ]
+
+    body, name = await c.works_list(person_id=orlov)
+    lines = paragraphs(body)
+    authored = (await c.person_works(orlov, {}, type_=None, role="author"))["items"]
+    expected = [w for w in authored if w["type"] in ("publication", "talk")]
+    assert name.startswith("Список трудов — ") and lines[0] == "Список научных трудов"
+    assert len([x for x in lines if x[:1].isdigit()]) == len(expected) > 0
+    assert gost_citation(expected[0]) in "\n".join(lines)
+
+    department = (await c.profile(orlov))["department"]
+    body, _ = await c.works_list(department=department, year=2026)
+    assert paragraphs(body)[1] == f"{department} за 2026 год"
+    body, _ = await c.works_list(person_id=orlov, year=1901)
+    assert paragraphs(body)[-1] == "Работ в репозитории нет."
+    with pytest.raises(NotFoundError):
+        await c.works_list(department="Кафедра, которой нет")

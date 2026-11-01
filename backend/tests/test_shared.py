@@ -143,12 +143,14 @@ async def test_db_roles_have_only_their_rights(demo: dict) -> None:
     async with uow_write_factory() as uow:
         await uow.session.execute(text("SET LOCAL ROLE writer"))
         await uow.session.execute(text("SELECT id, role, token_version FROM users"))
+        await uow.session.execute(text("DELETE FROM outbox WHERE false"))  # import_service публикует через outbox
         with pytest.raises(DBAPIError, match="permission denied"):
             async with uow.session.begin_nested():
                 await uow.session.execute(text("SELECT password_hash FROM users"))
     for role, sql in (
         ("catalog", "SELECT id FROM users"),
         ("catalog", "UPDATE works SET title = title"),
+        ("catalog", "SELECT id FROM outbox"),
         ("auth", "SELECT id FROM works"),
         ("grafana_ro", "SELECT id FROM works"),
     ):
@@ -195,6 +197,7 @@ async def test_retry_without_retry_queue_goes_to_dead_letters() -> None:
         raise RetryMessageError("позже")
 
     message = FakeMessage(BusMessage(type="t", source="test", trace_id="x", payload={}).model_dump_json().encode())
+
     class Empty(BaseModel):
         pass
 

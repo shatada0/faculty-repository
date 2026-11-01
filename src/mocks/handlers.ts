@@ -1,6 +1,6 @@
 // MSW handlers implementing the API contract (section 7) over the in-memory db.
 import { delay, http, HttpResponse, type DefaultBodyType, type HttpResponseResolver, type PathParams } from 'msw'
-import type { AccessLevel, AdminWork, MaterialKind, MaterialStatus, Person, PersonKind, SubjectScheme, User, WorkType } from '@/api/types'
+import type { AccessLevel, AdminWork, MaterialKind, MaterialStatus, Person, PersonKind, PersonPatch, SubjectScheme, User, WorkType } from '@/api/types'
 import { DEPTS } from './data'
 import { gostCitation } from './gost'
 import { shortName } from './names'
@@ -379,15 +379,24 @@ export const handlers = [
   patch('/admin/people/:id', async ({ params, request }) => {
     const p = resolvePerson(params.id as string)
     if (!p) return notFound('Человек не найден')
-    const body = (await request.json()) as Partial<Person>
+    const body = (await request.json()) as PersonPatch
     delete body.id
-    if (body.fullName !== undefined && !body.fullName.trim()) return err(400, 'bad_name', 'Укажите ФИО')
+    if (body.fullName !== undefined && !body.fullName?.trim()) return err(400, 'bad_name', 'Укажите ФИО')
     if (body.orcid && !/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(body.orcid)) return err(400, 'bad_orcid', 'ORCID в формате 0000-0000-0000-0000')
     const badDept = unknownDepartment(body.department)
     if (badDept) return badDept
     Object.assign(p, body)
+    for (const [k, v] of Object.entries(body)) if (v === null) delete (p as Partial<Person>)[k as keyof Person]
     for (const w of db.works) for (const a of allAuthorRefs(w)) if (a.personId === p.id) a.kind = p.kind
     return HttpResponse.json(personCard(p))
+  }, true),
+  // No ORCID or Crossref offline: the person's own DOIs come back as "already in the repository".
+  post('/admin/people/:id/orcid-import', ({ params }) => {
+    const p = resolvePerson(params.id as string)
+    if (!p) return notFound('Человек не найден')
+    if (!p.orcid) return err(400, 'no_orcid', 'У человека не указан ORCID')
+    const known = db.works.filter((w) => w.type === 'publication' && w.doi && allAuthorRefs(w).some((a) => a.personId === p.id)).length
+    return HttpResponse.json({ found: known, created: 0, known, notFound: [], failed: [], message: `DOI в профиле ORCID: ${known}. Новых черновиков: 0, уже в базе: ${known}.` })
   }, true),
   post('/admin/people/:id/merge', async ({ params, request }) => {
     const main = resolvePerson(params.id as string)

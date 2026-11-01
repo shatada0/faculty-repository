@@ -1,8 +1,10 @@
-"""PDF → текст титульника и реферата → регулярки и LLM → поля карточки с confidence, посчитанным сервером."""
+"""PDF → текст титульника и реферата (у скана — через OCR) → регулярки и LLM → поля карточки с confidence, посчитанным сервером."""
 
 import asyncio
+import difflib
 import json
 import re
+import shutil
 import sys
 import time
 from typing import Annotated, Any
@@ -10,15 +12,20 @@ from typing import Annotated, Any
 import httpx
 from pydantic import BaseModel, BeforeValidator, Field, ValidationError
 
-from extraction_worker.src.service import pdf_text
+from extraction_worker.src.service import ocr, pdf_text
 from extraction_worker.src.service.pdf_text import PASSWORD_EXIT
 from shared.config import llm_config
 from shared.logging import get_logger
-from shared.people.names import parse_name
+from shared.people.names import parse_name, translit
 
 logger = get_logger(__name__)
 
 PDF_TIMEOUT = 60
+OCR_TIMEOUT = ocr.OCR_PAGES * ocr.PAGE_TIMEOUT + 30
+OCR = shutil.which("tesseract") is not None  # в образе воркера есть; без него скан — ошибка, как раньше
+# Ниже порога lowConfidence (0.7): OCR путает буквы («Сс ПОМОЩЬЮ»), карточку со скана смотрит модератор,
+# без автопубликации. Руководителя, найденного в базе, import_service всё равно поднимет до 0.95.
+OCR_CONFIDENCE = 0.6
 TEXT_LIMIT = 15000  # ~3–5 тыс. токенов: титульник, 2–3 страницы и реферат
 REGEX = 0.95
 IN_TEXT = 0.85
@@ -74,30 +81,45 @@ def dehyphen(page: str) -> str:
     return re.sub(r"(\w)-\n(?=\w)", r"\1-", page)
 
 
-async def pdf_pages(data: bytes) -> list[str]:
-    """Текст первых страниц в подпроцессе: без shell, со списком аргументов и таймаутом."""
-    if not data.startswith(b"%PDF-"):
-        raise ItemError("Файл не является PDF")
+async def _pages(script: str, data: bytes, seconds: int) -> tuple[int | None, bytes, bytes]:
+    """Скрипт-подпроцесс над PDF: без shell, со списком аргументов и таймаутом. → (код, stdout, stderr)."""
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
-        pdf_text.__file__,  # файлом, а не -m: иначе подпроцесс импортирует пакет воркера с httpx и конфигом
+        script,  # файлом, а не -m: иначе подпроцесс импортирует пакет воркера с httpx и конфигом
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        out, err = await asyncio.wait_for(proc.communicate(data), PDF_TIMEOUT)
+        out, err = await asyncio.wait_for(proc.communicate(data), seconds)
     except TimeoutError:
         raise ItemError("Файл не удалось разобрать") from None
-    finally:  # и при отмене снаружи (таймаут элемента, остановка): иначе pypdf крутится сиротой
+    finally:  # и при отмене снаружи (таймаут элемента, остановка): иначе разбор крутится сиротой
         if proc.returncode is None:
             proc.kill()
             await proc.wait()
-    if proc.returncode == PASSWORD_EXIT:
+    return proc.returncode, out, err
+
+
+async def pdf_pages(data: bytes) -> list[str]:
+    """Текстовый слой первых страниц (pypdf)."""
+    if not data.startswith(b"%PDF-"):
+        raise ItemError("Файл не является PDF")
+    code, out, err = await _pages(pdf_text.__file__, data, PDF_TIMEOUT)
+    if code == PASSWORD_EXIT:
         raise ItemError("PDF защищён паролем")
-    if proc.returncode != 0:
+    if code != 0:
         logger.warning("pypdf упал", extra={"stderr": err.decode(errors="replace")[-1000:]})
         raise ItemError("Файл не удалось разобрать")
+    return json.loads(out)["pages"]
+
+
+async def ocr_pages(data: bytes) -> list[str]:
+    """Текст первых страниц скана (PDFium + Tesseract)."""
+    code, out, err = await _pages(ocr.__file__, data, OCR_TIMEOUT)
+    if code != 0:
+        logger.warning("OCR упал", extra={"stderr": err.decode(errors="replace")[-1000:]})
+        raise ItemError("Скан не удалось распознать")
     return json.loads(out)["pages"]
 
 
@@ -150,7 +172,8 @@ def caps_keywords(text: str) -> list[str] | None:
 
 # Конец списка: пустая строка, точка в конце строки или новая фраза («\nОбъектом …») не после запятой.
 KEYWORDS = re.compile(
-    r"ключевые слова\s*[:\-–—]\s*(.+?)(?:\n\s*\n|\.\s*\n|(?<![,;-])[ \t]*\n(?=[ \t]*[А-ЯЁA-Z][а-яёa-z])|$)",
+    # (?-i:…): заглавная — именно заглавная; под IGNORECASE список рвался на любом переносе («градиентный\nбустинг»)
+    r"ключевые слова\s*[:\-–—]\s*(.+?)(?:\n\s*\n|\.\s*\n|(?<![,;-])[ \t]*\n(?=(?-i:[ \t]*[А-ЯЁA-Z][а-яёa-z]))|$)",
     re.IGNORECASE | re.DOTALL,
 )
 VOLUME = re.compile(r"\bсодержит\s+\d+\s*(?:с\.|стр)|^\s*ключевые слова", re.IGNORECASE)
@@ -172,7 +195,8 @@ def by_regex(title_page: str, text: str) -> dict[str, Any]:
     out: dict[str, Any] = {}
     if m := re.search(r"\b\d{2}\.\d{2}\.\d{2}\b", title_page):
         out["directionCode"] = m[0]
-    if years := re.findall(r"\b(19[89]\d|20\d{2})\b(?:\s*г\.?)?\s*$", title_page.strip(), re.MULTILINE):
+    # «Москва 2026», «2025г.», «2026 год», «2026 г .» — последней строкой титульника
+    if years := re.findall(r"(?<!\d)(19[89]\d|20\d{2})\s*(?:г(?:од)?\s*\.?)?\s*$", title_page.strip(), re.MULTILINE):
         out["year"] = int(years[-1])  # «Москва 2026» внизу титульника
     if m := re.search(r"(?:содержит|объ[её]м[а-я]*)\D{0,40}?(\d{1,4})\s*(?:с\.|стр)", text, re.IGNORECASE):
         out["pages"] = int(m[1])
@@ -259,6 +283,50 @@ async def ask_llm(http: httpx.AsyncClient, text: str, log: dict) -> ExtractedCar
         raise ItemError("ИИ вернул неверный ответ") from e
 
 
+PATRONYMIC = re.compile(r"(вич|вна|ична|оглы|кызы)$", re.IGNORECASE)
+
+
+def _name_key(s: str) -> str:
+    return re.sub(r"[^a-z]", "", translit(s.replace("ё", "е").replace("Ё", "Е")).lower())
+
+
+def fix_caps(name: str) -> str:
+    """«ГАЙДАЙ-ТУРЛОВ Иван Павлович» → «Гайдай-Турлов Иван Павлович»: фамилия капсом с титульника."""
+    # только слова из букв: инициалы «Ю.В.» не трогаем, иначе выйдет «Ю.в.»
+    return " ".join(
+        "-".join(p.capitalize() for p in t.split("-")) if re.fullmatch(r"[A-ZА-ЯЁ]{2,}(?:-[A-ZА-ЯЁ]{2,})*", t) else t
+        for t in name.split()
+    )
+
+
+def snap_name(value: str, title_page: str) -> str:
+    """ФИО от модели → то же ФИО, как оно написано на титульнике.
+
+    Маленькая модель путает буквы фамилии капсом («ГОВОРАВА» вместо «ГОВОРОВА») и переводит имя в латиницу
+    («Veiber Evgenia» вместо «ВЕЙБЕР Евгения Николаевна»). Похожего в тексте нет — значение остаётся, а низкий
+    confidence покажет его модератору.
+    """
+    # с инициалами не притягиваем: «R.Sh. Azimov» на титульнике — «Р. Ш. Азимов», окно по словам их не сопоставит
+    if "." in value or norm(value) in norm(title_page):
+        return value
+    key, n = _name_key(value), len(value.split())
+    best, best_ratio = None, 0.8  # порог: опечатка в одну-две буквы проходит, другой человек — нет
+    for line in title_page.splitlines():
+        tokens = line.split()
+        # окно ровно по числу слов: длиннее подхватывает обломки слов («ХР АМОВ» — так pypdf читает «ХРАМОВ»)
+        for i in range(len(tokens) - n + 1):
+            window = tokens[i : i + n]
+            if not all(t[:1].isupper() for t in window):
+                continue
+            found = _name_key(" ".join(window))
+            ratio = difflib.SequenceMatcher(None, key, found).ratio()
+            # из текста — не короче значения модели: «Амов» из «ХР АМОВ» не заменит верное «Храмов»
+            if ratio > best_ratio and len(found) >= len(key) - 1:
+                rest = tokens[i + n : i + n + 1]  # «Veiber Evgenia» → с отчеством из текста
+                best, best_ratio = window + (rest if rest and PATRONYMIC.search(rest[0]) else []), ratio
+    return " ".join(best).strip(" ,;") if best else value
+
+
 def _confidence(value: Any, text: str, *, name: bool = False, loose: bool = False) -> float:
     """Есть в исходном тексте (пробелы, регистр, «ё» нормализованы) — 0.85; нет — вероятно, выдумано.
 
@@ -291,8 +359,21 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
         "Текст извлечён",
         extra=log | {"pages": len(pages), "duration_ms": round((time.perf_counter() - started) * 1000)},
     )
-    if not norm(text):
-        raise ItemError("Скан без текстового слоя")  # OCR добавим, если сканов окажется много
+    scanned = not norm(text)
+    if scanned:
+        if not OCR:
+            raise ItemError("Скан без текстового слоя")
+        log["stage"] = "ocr"
+        started = time.perf_counter()
+        pages = [dehyphen(p) for p in await ocr_pages(pdf)]
+        text = select_text(pages)
+        logger.info(
+            "Скан распознан",
+            extra=log
+            | {"pages": len(pages), "chars": len(text), "duration_ms": round((time.perf_counter() - started) * 1000)},
+        )
+        if not norm(text):
+            raise ItemError("Скан не удалось распознать")
     fields = by_regex(pages[0] if pages else "", text)
     meta = {k: {"source": "ai", "confidence": REGEX} for k in fields}
     started = time.perf_counter()
@@ -301,9 +382,12 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
     logger.info("Карточка от модели", extra=log | {"duration_ms": round((time.perf_counter() - started) * 1000)})
     normalized = norm(text)
     card.annotation = clean_annotation(card.annotation)
+    title_page = pages[0] if pages else ""
     for key, value in card.model_dump().items():
         if value in (None, "", []):
             continue
+        if key in ("authors", "supervisors"):
+            value = [fix_caps(snap_name(v, title_page)) for v in value]
         fields[key] = value
         meta[key] = {
             "source": "ai",
@@ -313,4 +397,6 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
         }
     fields["language"] = "ru" if re.search(r"[а-яё]", fields.get("title") or text, re.IGNORECASE) else "en"
     fields |= work_kind(pages[0] if pages else "")  # не поле карточки: в meta не попадает
+    if scanned:
+        meta = {k: m | {"confidence": min(m["confidence"], OCR_CONFIDENCE)} for k, m in meta.items()}
     return fields, meta

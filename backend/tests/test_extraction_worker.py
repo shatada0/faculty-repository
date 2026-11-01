@@ -31,6 +31,7 @@ from shared.exceptions import RetryMessageError
 from tests.fakes import FakePublisher, FakeStorage
 
 SAMPLE = Path(__file__).parent.parent / "fixtures" / "sample.pdf"
+TITLE = SAMPLE.with_name("vkr-title.pdf")
 
 
 def test_regex_and_confidence() -> None:
@@ -59,6 +60,53 @@ async def test_worker_log_names_failed_stage() -> None:
             with pytest.raises(ItemError):
                 await extract(data, http, log)
             assert log["stage"] == stage
+
+
+async def test_scan_goes_through_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Нет текстового слоя: без Tesseract — ошибка, как раньше; с ним текст распознаётся и идёт в LLM."""
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(595, 842)
+    buf = io.BytesIO()
+    writer.write(buf)
+    scan = buf.getvalue()
+    title = await pdf_pages(TITLE.read_bytes())
+    seen = []
+
+    async def ocr_pages(data: bytes) -> list[str]:
+        seen.append(data)
+        return title if len(seen) == 1 else ["   "]
+
+    monkeypatch.setattr(extract_module, "ocr_pages", ocr_pages)
+    bad_json = httpx.MockTransport(lambda r: httpx.Response(200, json={"choices": [{"message": {"content": "{"}}]}))
+    async with httpx.AsyncClient(transport=bad_json) as http:
+        monkeypatch.setattr(extract_module, "OCR", False)
+        with pytest.raises(ItemError, match="без текстового слоя"):
+            await extract(scan, http, {})
+        monkeypatch.setattr(extract_module, "OCR", True)
+        log: dict = {}
+        with pytest.raises(ItemError, match="неверный ответ"):
+            await extract(scan, http, log)
+        assert log["stage"] == "parse" and seen == [scan]  # распознанный текст дошёл до модели
+        with pytest.raises(ItemError, match="не удалось распознать"):
+            await extract(scan, http, {})
+
+    seen.clear()
+    card = {"title": "Сервис", "authors": [], "supervisors": [], "department": None, "annotation": None}
+    ok = httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(card)}}]})
+    )
+    async with httpx.AsyncClient(transport=ok) as http:
+        fields, meta = await extract(scan, http, {})
+    assert fields["directionCode"] and meta["directionCode"]["confidence"] == extract_module.OCR_CONFIDENCE
+    assert all(m["confidence"] <= extract_module.OCR_CONFIDENCE for m in meta.values())  # скан — к модератору
+
+
+@pytest.mark.skipif(not extract_module.OCR, reason="нужен tesseract с моделью rus")
+async def test_tesseract_reads_title_page() -> None:
+    pages = await extract_module.ocr_pages(TITLE.read_bytes())
+    assert "квалификационная" in norm(pages[0])
 
 
 def test_work_kind_from_title_page() -> None:
@@ -244,3 +292,44 @@ async def test_handler_retries_when_result_not_published() -> None:
     storage = FakeStorage()
     with pytest.raises(RetryMessageError):
         await ExtractionHandler(storage, Broken(), None)(item(storage, b"not a pdf"), Delivery(False, 0, 0))
+
+
+def test_real_title_pages_year_caps_and_snapped_names() -> None:
+    """Формы с настоящих титульников ВКР (DSpace СПбГУ, 30 работ 2025–2026)."""
+    from extraction_worker.src.service.extract import by_regex, fix_caps, snap_name
+
+    for tail in ("Санкт-Петербург\n2026 год", "Санкт-Петербург\n2025г.", "Санкт-Петербург\n2026 г .", "Москва 2026"):
+        assert by_regex("ОП ВМ.5891.2024 «Робототехника»\n" + tail, "")["year"] in (2025, 2026), tail
+    page = "Санкт-Петербургский государственный университет\nГОВОРОВА Диана Игоревна\nВЕЙБЕР Евгения Николаевна\n"
+    page += "Научный руководитель:\nд.т.н. Дегтярёв Александр Борисович\n"
+    assert fix_caps(snap_name("ГОВОРАВА Диана Игоревна", page)) == "Говорова Диана Игоревна"  # опечатка модели
+    assert fix_caps(snap_name("Veiber Evgenia", page)) == "Вейбер Евгения Николаевна"  # латиница вместо кириллицы
+    assert snap_name("Дегтярев Александр Борисович", page) == "Дегтярев Александр Борисович"  # «ё» = «е»: уже в тексте
+    assert snap_name("Петров Пётр Петрович", page) == "Петров Пётр Петрович"  # чужого в тексте нет — как есть
+    assert fix_caps("ГАЙДАЙ-ТУРЛОВ Иван Павлович") == "Гайдай-Турлов Иван Павлович"
+    assert fix_caps("Иванов И. И.") == "Иванов И. И." and fix_caps("Ю.В. Литвинов") == "Ю.В. Литвинов"
+    # pypdf прочитал «ХРАМОВ» как «ХР АМОВ»: обломок не заменяет верное значение модели
+    assert (
+        snap_name("Храмов Владислав Александрович", "ХР АМОВ Владислав Александрович")
+        == "Храмов Владислав Александрович"
+    )
+    assert snap_name("R.Sh. Azimov", "Р. Ш. Азимов") == "R.Sh. Azimov"  # инициалы не притягиваем
+
+
+def test_keywords_list_continues_on_lowercase_line() -> None:
+    """Перенос внутри списка — не конец: «градиентный / бустинг» (регрессия: IGNORECASE ловил «б» как заглавную)."""
+    from extraction_worker.src.service.extract import by_regex
+
+    text = "\n".join(
+        [
+            "Ключевые слова: машинное обучение, отток клиентов, градиентный",
+            "бустинг, классификация.",
+            "Объектом является",
+        ]
+    )
+    assert by_regex("", text)["keywords"] == [
+        "машинное обучение",
+        "отток клиентов",
+        "градиентный бустинг",
+        "классификация",
+    ]

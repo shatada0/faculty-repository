@@ -2,7 +2,7 @@
 import { api, download, qs, upload, type Query } from './client'
 import type {
   AccessLevel, AdminPersonCard, AdminPersonListItem, AdminSummary, AdminWork, Department, DoiConflict, Facets, FileLink, Import, ImportItem,
-  ImportPreview, Material, MaterialKind, MaterialStatus, MyWork, Page, Person, PersonMetrics, PersonProfile, PublicWork, StaffListItem, Stats,
+  ImportPreview, Material, OrcidImport, MaterialKind, MaterialStatus, MyWork, Page, Person, PersonMetrics, PersonPatch, PersonProfile, PublicWork, StaffListItem, Stats,
   Subject, SubjectScheme, Suggestions, TalkEvent, UnmatchedAuthor, UploadLimits, User, WorkType,
 } from './types'
 
@@ -62,6 +62,9 @@ export const getAdminWorks = (q: Query) => api<{ items: AdminWork[]; total: numb
 // it can be gigabytes and a blob would hold all of it in memory.
 export const exportWorks = (q: Query, format: 'xlsx' | 'csv') => download(`/admin/exports/works${qs({ ...q, format })}`, `works.${format}`)
 export const worksZipUrl = (q: Query) => `/api/admin/exports/works.zip${qs(q)}`
+// GOST lists of works for reports: public docx, a plain link like the zip
+export const personWorksDocxUrl = (id: string, year?: string) => `/api/people/${id}/works.docx${qs({ year })}`
+export const departmentWorksDocxUrl = (department: string) => `/api/departments/works.docx${qs({ department })}`
 export const exportPeople = () => download('/admin/exports/people', 'people.xlsx')
 export const bulkWorks = (ids: string[], action: 'publish' | 'access', accessLevel?: AccessLevel) =>
   api<{ done: number; skipped: string[] }>('/admin/works/bulk', { method: 'POST', json: { ids, action, accessLevel } })
@@ -98,7 +101,8 @@ export const getAdminPeople = (q: Query) => api<{ items: AdminPersonListItem[]; 
 export const getUnmatched = () => api<{ items: UnmatchedAuthor[]; total: number }>(`/admin/people${qs({ unmatched: true })}`)
 export const createPerson = (p: Partial<Person>) => api<Person>('/admin/people', { method: 'POST', json: p })
 export const getAdminPerson = (id: string) => api<AdminPersonCard>(`/admin/people/${id}`)
-export const patchPerson = (id: string, p: Partial<Person>) => api<AdminPersonCard>(`/admin/people/${id}`, { method: 'PATCH', json: p })
+export const patchPerson = (id: string, p: PersonPatch) => api<AdminPersonCard>(`/admin/people/${id}`, { method: 'PATCH', json: p })
+export const importOrcid = (id: string) => api<OrcidImport>(`/admin/people/${id}/orcid-import`, { method: 'POST' })
 export const mergePerson = (id: string, fromId: string) => api<AdminPersonCard>(`/admin/people/${id}/merge`, { method: 'POST', json: { fromId } })
 export const matchAuthor = (displayName: string, personId: string | null, kind: Person['kind']) =>
   api<Person>('/admin/people/match', { method: 'POST', json: { displayName, personId, kind } })

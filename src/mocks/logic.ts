@@ -351,7 +351,9 @@ export function catalog(sp: URLSearchParams) {
   else list.sort((a, b) => byNew(a.w, b.w))
   const page = Math.max(1, Number(sp.get('page')) || 1)
   const pageSize = Math.min(100, Number(sp.get('pageSize')) || 20)
-  return { items: list.slice((page - 1) * pageSize, page * pageSize).map((x) => toPublic(x.w)), total: list.length, page, pageSize }
+  const q = sp.get('q')?.trim()
+  const items = list.slice((page - 1) * pageSize, page * pageSize).map((x) => (q ? { ...toPublic(x.w), titleParts: highlight(x.w.title, q) } : toPublic(x.w)))
+  return { items, total: list.length, page, pageSize }
 }
 
 /** Home "new arrivals": the newest work of every type first, then the rest by recency — so the list shows different types. */

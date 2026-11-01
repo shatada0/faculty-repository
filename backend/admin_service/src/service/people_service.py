@@ -4,23 +4,21 @@ import re
 from dataclasses import dataclass
 from uuid import UUID
 
-from sqlalchemy import any_, func, select, update
+from sqlalchemy import func, select, update
 
 from admin_service.src.dto import PersonIn
 from shared.auth.models import User
 from shared.auth.session import SessionUser
 from shared.exceptions import BadRequestError, NotFoundError
-from shared.imports import ImportItem
 from shared.logging import get_logger
 from shared.people import Person
-from shared.repository.people_repository import PersonRepository, add_name, name_search, person_dict
+from shared.repository.people_repository import PersonRepository, add_name, lock_names, name_search, person_dict
 from shared.repository.works_repository import WorkRepository
 from shared.uow import UnitOfWork, UnitOfWorkFactory
 from shared.works import Work, WorkPerson
 
 logger = get_logger(__name__)
 
-NAMES_LOCK = 0x6E616D6573  # pg_advisory_xact_lock: варианты имён пишет один запрос за раз
 ORCID = re.compile(r"\d{4}-\d{4}-\d{4}-\d{3}[\dX]")
 FILLABLE = ("department", "position", "academic_degree", "academic_title", "orcid", "affiliation", "photo_key")
 COLUMNS = {
@@ -35,20 +33,14 @@ COLUMNS = {
 }
 
 
-async def _lock_names(uow: UnitOfWork) -> None:
-    """Сопоставление и слияние добавляют варианты имён: два запроса разом упали бы на ключе person_names."""
-    await uow.session.execute(select(func.pg_advisory_xact_lock(NAMES_LOCK)))
-
-
-async def relink_unmatched(uow: UnitOfWork, display_name: str, person_id: UUID, kind: str) -> list[UUID]:
-    """Нераспознанный автор с этим написанием → человек во всех работах. Возвращает затронутые работы."""
-    rows = await uow.session.execute(
-        update(WorkPerson)
-        .where(WorkPerson.person_id.is_(None), WorkPerson.display_name == display_name)
-        .values(person_id=person_id, kind=kind)
-        .returning(WorkPerson.work_id)
-    )
-    return list({r[0] for r in rows})
+def orcid_checksum_ok(orcid: str) -> bool:
+    """Последний знак ORCID — контрольный (ISO 7064 MOD 11-2): опечатка в одной цифре не пройдёт."""
+    digits = orcid.replace("-", "")
+    total = 0
+    for ch in digits[:-1]:
+        total = (total + int(ch)) * 2
+    check = (12 - total % 11) % 11
+    return digits[-1] == ("X" if check == 10 else str(check))
 
 
 def _validate(body: PersonIn, *, new: bool) -> None:
@@ -139,14 +131,10 @@ class PeopleService:
             .order_by(WorkPerson.display_name.collate("ru-RU-x-icu"))
         )
         async with self.uow_factory() as uow:
-            await _lock_names(uow)  # до чтения: вторая вкладка увидит уже привязанные имена, а не упадёт на ключе
+            await lock_names(uow)  # до чтения: вторая вкладка увидит уже привязанные имена, а не упадёт на ключе
             rows = (await uow.session.execute(stmt)).all()
-            names = [name for name, _ in rows]
-            matched = await self.people.match_many(uow, names)
-            for name in names:
-                if name in matched:
-                    await self._link(uow, matched[name], name, user)
-            rows = [(name, works) for name, works in rows if name not in matched]
+            linked = {name for _, name, _ in await self._link_known(uow, user)}
+            rows = [(name, works) for name, works in rows if name not in linked]
             suggestions = await self.people.suggestions(uow, [name for name, _ in rows])
             items = []
             for name, works in rows:
@@ -161,22 +149,17 @@ class PeopleService:
                 )
         return {"items": items, "total": len(items)}
 
-    async def _link(self, uow: UnitOfWork, p: Person, display_name: str, user: SessionUser) -> list[UUID]:
+    async def _link(
+        self, uow: UnitOfWork, p: Person, display_name: str, user: SessionUser, *, auto: bool = False
+    ) -> list[UUID]:
         """Написание — вариант имени человека, ссылки во всех работах и элементах импорта — на него."""
-        add_name(p, p.full_name)
-        add_name(p, display_name)
-        await uow.session.flush()
-        work_ids = await relink_unmatched(uow, display_name, p.id, p.kind)
-        await uow.session.execute(
-            update(ImportItem)
-            .where(any_(ImportItem.unmatched_authors) == display_name)
-            .values(unmatched_authors=func.array_remove(ImportItem.unmatched_authors, display_name))
-        )
+        work_ids = await self.people.link(uow, p, display_name)
         await self.works.refresh_search(uow, work_ids)
         logger.info(
             "Автор сопоставлен",
             extra={
                 "audit": True,
+                "auto": auto,
                 "person_id": str(p.id),
                 "display_name": display_name,
                 "works": len(work_ids),
@@ -185,12 +168,33 @@ class PeopleService:
         )
         return work_ids
 
-    async def create(self, body: PersonIn) -> dict:
+    async def _link_known(self, uow: UnitOfWork, user: SessionUser | None) -> list[tuple[Person, str, list[UUID]]]:
+        """Все нераспознанные написания, которые теперь однозначно совпадают с человеком, — сразу на него."""
+        linked = await self.people.link_known(uow)
+        await self.works.refresh_search(uow, {w for _, _, ids in linked for w in ids})
+        for p, name, ids in linked:
+            logger.info(
+                "Автор сопоставлен",
+                extra={
+                    "audit": True,
+                    "auto": True,
+                    "person_id": str(p.id),
+                    "display_name": name,
+                    "works": len(ids),
+                    "by": str(user.id) if user else None,
+                },
+            )
+        return linked
+
+    async def create(self, body: PersonIn, user: SessionUser | None = None) -> dict:
         _validate(body, new=True)
         person = Person(kind=body.kind or "external")
         async with self.uow_factory() as uow:
+            await lock_names(uow)
             await self._fill(uow, person, body)
             self.people.add(uow, person)
+            await uow.session.flush()
+            await self._link_known(uow, user)  # «Oseledets I.» из прошлых импортов — сразу на нового человека
         logger.info("Человек создан", extra={"person_id": str(person.id)})
         return person_dict(person, admin=True)
 
@@ -201,6 +205,9 @@ class PeopleService:
             value = value.strip() or None if isinstance(value, str) else value
             if value is None and key in ("kind", "fullName"):
                 continue
+            # контрольный знак — только у нового значения: вымышленные ORCID демо-сида не мешают сохранить карточку
+            if key == "orcid" and value and value != person.orcid and not orcid_checksum_ok(value):
+                raise BadRequestError("ORCID с ошибкой: не сходится контрольный знак", code="bad_orcid")
             setattr(person, COLUMNS[key], value)
         person.full_name = person.full_name.strip()
         if body.aliases is not None:
@@ -232,13 +239,14 @@ class PeopleService:
             ]
         }
 
-    async def patch(self, person_id: UUID, body: PersonIn) -> dict:
+    async def patch(self, person_id: UUID, body: PersonIn, user: SessionUser | None = None) -> dict:
         _validate(body, new=False)
         async with self.uow_factory() as uow:
-            await _lock_names(uow)
+            await lock_names(uow)
             p = await self._resolve(uow, person_id)
             await self._fill(uow, p, body)
             await uow.session.execute(update(WorkPerson).where(WorkPerson.person_id == p.id).values(kind=p.kind))
+            await self._link_known(uow, user)  # новый вариант имени забирает свои нераспознанные написания
             await self.works.refresh_search(uow, await self._work_ids(uow, p.id))  # имя ищется в работах человека
         return await self.card(p.id)
 
@@ -248,7 +256,7 @@ class PeopleService:
         if not display_name:
             raise BadRequestError("Укажите ФИО", code="bad_name")
         async with self.uow_factory() as uow:
-            await _lock_names(uow)
+            await lock_names(uow)
             if person_id:
                 p = await self._resolve(uow, person_id)
             else:
@@ -261,7 +269,7 @@ class PeopleService:
         """Одна транзакция: ссылки и учётки — на основного, имена — к нему, пустые поля — из второго. Отмены нет."""
         async with self.uow_factory() as uow:
             # Блокировка до чтения: встречные слияния A→B и B→A по очереди, второе увидит первое и не замкнёт цикл
-            await _lock_names(uow)
+            await lock_names(uow)
             main = await self._resolve(uow, main_id)
             other = await self._resolve(uow, from_id)
             if main.id == other.id:
@@ -279,6 +287,8 @@ class PeopleService:
                 if getattr(main, field) is None:
                     setattr(main, field, getattr(other, field))
             other.merged_into = main.id
+            await uow.session.flush()
+            await self._link_known(uow, user)  # раньше два кандидата делили ключ — теперь он один
             await self.works.refresh_search(uow, await self._work_ids(uow, main.id))
         logger.info(
             "Профили объединены", extra={"audit": True, "main": str(main.id), "from": str(other.id), "by": str(user.id)}

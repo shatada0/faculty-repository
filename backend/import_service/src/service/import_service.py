@@ -4,6 +4,7 @@ import asyncio
 import shutil
 import tempfile
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
@@ -18,7 +19,7 @@ from import_service.src.service.archive import MAX_FILES, ArchiveError, display_
 from shared.auth.session import SessionUser
 from shared.bus.consumer import Delivery
 from shared.bus.contracts import ImportTopic, ItemCreatedDTO, ItemExtractedDTO
-from shared.bus.publisher import MessageBusPublisher
+from shared.bus.outbox import OutboxRelay, enqueue
 from shared.config import UPLOAD_LIMITS
 from shared.db.base import now
 from shared.exceptions import BadRequestError, NotFoundError
@@ -161,7 +162,7 @@ class ImportService:
     works: WorkRepository
     people: PersonRepository
     storage: Storage
-    publisher: MessageBusPublisher
+    outbox: OutboxRelay
 
     # ---------- чтение ----------
 
@@ -221,7 +222,8 @@ class ImportService:
             for it in items:
                 it.status, it.error = "pending", None
             imp.status = "processing"
-        await self._publish(imp.work_type, list(items))
+            self._publish(uow, imp.work_type, items)
+        self.outbox.kick()
         logger.info("Повтор импорта", extra={"import_id": str(import_id), "files": len(items)})
         return await self.get(import_id, None)
 
@@ -410,7 +412,8 @@ class ImportService:
             )
             await uow.session.flush()
             uow.session.add_all(items)
-        await self._publish(work_type, items)
+            self._publish(uow, work_type, items)
+        self.outbox.kick()
         logger.info(
             "Архив принят",
             extra={
@@ -422,19 +425,14 @@ class ImportService:
         )
         return import_id
 
-    async def _publish(self, work_type: str, items: list[ImportItem]) -> None:
-        """После коммита: воркер не получит элемент, которого ещё нет в базе.
-
-        Шина не приняла событие — этот и следующие элементы в ошибку: их повторит «Повторить»,
-        а без события они навсегда остались бы в очереди.
-        """
-        for i, it in enumerate(items):
-            dto = ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=work_type)
-            try:
-                await self.publisher.publish(ImportTopic.ITEM_CREATED, dto)
-            except Exception:  # publisher уже записал причину в лог
-                await self._fail([x.id for x in items[i:]], "Файл не отправлен на разбор")
-                return
+    @staticmethod
+    def _publish(uow: UnitOfWork, work_type: str, items: Sequence[ImportItem]) -> None:
+        """В той же транзакции, что и элементы: воркер не получит элемента, которого нет в базе,
+        а элемент не останется «в очереди» без события, даже если шина лежит или сервис упал после коммита."""
+        for it in items:
+            enqueue(
+                uow, ImportTopic.ITEM_CREATED, ItemCreatedDTO(item_id=it.id, file_key=it.file_key, work_type=work_type)
+            )
 
     # ---------- результат воркера ----------
 

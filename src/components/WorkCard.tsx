@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { BookOpen, FileText, GraduationCap, Mic } from 'lucide-react'
-import type { FieldSource, MaterialStatus, PersonLink, PublicWork, ViewItem, WorkStatus, WorkType } from '@/api/types'
+import type { FieldSource, MaterialStatus, PersonLink, PublicWork, TitlePart, ViewItem, WorkStatus, WorkType } from '@/api/types'
 import { materialStatusLabels, statusLabels } from '@/lib/labels'
 import { Badge, cn, type Tone } from './ui'
 
@@ -44,6 +44,10 @@ export const FieldSourceBadge = ({ source, confidence, low }: { source: FieldSou
   return <span className={cn('text-sm italic', low ? 'text-warn' : 'text-muted')}>{text}</span>
 }
 
+/** A title with the words that matched the search in bold. */
+export const marked = (parts: TitlePart[]) =>
+  parts.map((p, i) => (p.hit ? <mark key={i} className="bg-transparent font-bold text-ink">{p.text}</mark> : p.text))
+
 /** A work as a bibliographic list entry, as the server describes it. `lead` is an optional left column (number or date). */
 export function WorkCard({ work: w, lead, narrowLead, className }: { work: PublicWork; lead?: ReactNode; narrowLead?: boolean; className?: string }) {
   const v = w.view
@@ -53,7 +57,7 @@ export function WorkCard({ work: w, lead, narrowLead, className }: { work: Publi
       <div className="flex min-w-0 flex-col gap-0.5">
         <span className="text-sm text-ink-2">{v.kind}, {w.year}</span>
         <h3 className="text-lg font-bold leading-snug">
-          <Link to={`/works/${w.id}`} className="no-underline hover:underline">{w.title}</Link>
+          <Link to={`/works/${w.id}`} className="no-underline hover:underline">{w.titleParts ? marked(w.titleParts) : w.title}</Link>
         </h3>
         <span>{v.byline.map((g, i) => <span key={i}>{i > 0 && '; '}{g.label && `${g.label} `}<Authors people={g.people} /></span>)}</span>
         <span className="text-[15px] italic text-ink-2">{v.where}</span>

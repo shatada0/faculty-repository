@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { ApiError, getPerson, getPersonMetrics, getPersonWorks } from '@/api'
+import { ApiError, getPerson, getPersonMetrics, getPersonWorks, personWorksDocxUrl } from '@/api'
 import { NotFound, useTitle } from '@/components/Layout'
 import { WorkCard, WorkCardSkeleton } from '@/components/WorkCard'
 import { EmptyState, ErrorState, SectionTitle, Select, Skeleton, Tabs, Tiles } from '@/components/ui'
@@ -63,6 +63,9 @@ export default function Person() {
             {[p.academicDegree, p.academicTitle].filter(Boolean).join(', ')}
             {p.orcid && <>{(p.academicDegree || p.academicTitle) && ' · '}<a href={`https://orcid.org/${p.orcid}`} target="_blank" rel="noreferrer">ORCID {p.orcid}</a></>}
           </p>
+          {p.kind === 'staff' && import.meta.env.VITE_USE_MOCKS !== 'true' && (
+            <p><a href={personWorksDocxUrl(p.id, year || undefined)}>Список трудов по ГОСТ{year && ` за ${year} год`} (docx)</a></p>
+          )}
         </header>
       </div>
 

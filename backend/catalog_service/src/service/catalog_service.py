@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, select, tuple_
 from sqlalchemy.sql import ColumnElement
 
+from catalog_service.src.service.docx import docx
 from catalog_service.src.service.gost import gost_citation
 from catalog_service.src.service.search import ALL_FILTERS, TAB_FILTERS, facet_counts, filter_clauses, selected
 from catalog_service.src.service.view import work_view
@@ -17,7 +18,16 @@ from shared.people import Person
 from shared.people.names import short_name
 from shared.refdata import Classifier, Direction
 from shared.repository.people_repository import PersonRepository, name_search, person_dict
-from shared.repository.works_repository import WorkRepository, matches, norm, plain, published, relevance, ts_query
+from shared.repository.works_repository import (
+    OPERATORS,
+    WorkRepository,
+    matches,
+    norm,
+    plain,
+    published,
+    relevance,
+    ts_query,
+)
 from shared.storage import Storage
 from shared.uow import UnitOfWorkFactory
 from shared.works import STUDENT_TYPES, WORK_TYPES, Work, WorkPerson
@@ -28,6 +38,7 @@ Params = dict[str, list[str]]
 AUTHOR_ROLES = ("author", "presenter")
 # всё название целиком, совпавшие слова между \x01 и \x02 — таких символов в названиях нет
 HEADLINE = "HighlightAll=true, StartSel=\x01, StopSel=\x02"
+LIKE = 0.5  # похожесть слова по триграммам, как pg_trgm.word_similarity_threshold в миграции 20261019_0003
 
 
 def _ru(s: str) -> str:
@@ -113,8 +124,9 @@ class CatalogService:
             order = (Work.title.collate("ru-RU-x-icu"), Work.id)
         else:
             order = newest
+        marked = [func.ts_headline("russian", Work.title, ts_query(q), HEADLINE).label("marked")] if q else []
         stmt = (
-            select(Work, func.count().over().label("total"))
+            select(Work, func.count().over().label("total"), *marked)
             .where(*conditions)
             .order_by(*order)
             .offset((page - 1) * page_size)
@@ -128,6 +140,9 @@ class CatalogService:
                 else await uow.session.scalar(select(func.count()).select_from(Work).where(*conditions))
             )
             items = await self._public(uow, [r.Work for r in rows])
+        if q:
+            for item, r in zip(items, rows, strict=True):
+                item["titleParts"] = _parts(r.marked, q)
         return {"items": items, "total": total, "page": page, "pageSize": page_size}
 
     async def latest(self, n: int = 6) -> list[dict]:
@@ -203,7 +218,7 @@ class CatalogService:
         return {
             "works": [
                 drop_none(
-                    {"id": str(r.id), "type": r.type, "title": r.title, "year": r.year, "parts": _parts(r.marked)}
+                    {"id": str(r.id), "type": r.type, "title": r.title, "year": r.year, "parts": _parts(r.marked, q)}
                 )
                 for r in rows
             ],
@@ -384,6 +399,44 @@ class CatalogService:
             works = list((await uow.session.execute(stmt)).scalars())
             return {"items": await self._public(uow, works), "total": len(works)}
 
+    async def works_list(
+        self, *, person_id: UUID | None = None, department: str | None = None, year: int | None = None
+    ) -> tuple[bytes, str]:
+        """Список трудов по ГОСТ: публикации и выступления человека или сотрудников кафедры (как авторов),
+        видимые в каталоге. → (docx, имя файла)."""
+        async with self.uow_factory() as uow:
+            if person_id:
+                p = await self._person(uow, person_id)
+                who, clause = p.full_name, _role_clause(p.id, "author")
+            else:
+                if not await self.works.known_department(uow, department):
+                    raise NotFoundError("Кафедра не найдена")
+                staff = select(Person.id).where(
+                    Person.kind == "staff", Person.department == department, Person.merged_into.is_(None)
+                )
+                authored = select(WorkPerson.work_id).where(
+                    WorkPerson.person_id.in_(staff), WorkPerson.role.in_(AUTHOR_ROLES)
+                )
+                who, clause = department, Work.id.in_(authored)
+            conditions = [published(), clause, Work.type.in_(("publication", "talk"))]
+            if year:
+                conditions.append(Work.year == year)
+            stmt = select(Work).where(*conditions).order_by(Work.year, Work.title.collate("ru-RU-x-icu"))
+            items = await self._public(uow, list((await uow.session.execute(stmt)).scalars()))
+        period = f" за {year} год" if year else ""
+        paragraphs = [("title", "Список научных трудов"), ("title", f"{who}{period}")]
+        n = 0
+        for work_type, heading in (("publication", "Публикации"), ("talk", "Выступления")):
+            group = [i for i in items if i["type"] == work_type]
+            if group:
+                paragraphs.append(("heading", heading))
+            for item in group:
+                n += 1
+                paragraphs.append(("item", f"{n}. {gost_citation(item)}"))
+        if not n:
+            paragraphs.append(("item", "Работ в репозитории нет."))
+        return docx(paragraphs), f"Список трудов — {who}{f' {year}' if year else ''}.docx"
+
     async def metrics(self, person_id: UUID, year: str | None) -> dict:
         """Индекс Хирша и цитирования по опубликованным публикациям человека — по репозиторию, не по Scopus."""
         async with self.uow_factory() as uow:
@@ -409,9 +462,39 @@ class CatalogService:
         }
 
 
-def _parts(marked: str) -> list[dict]:
-    """Название из ts_headline с метками \\x01…\\x02 → куски с флагом совпадения: фронт только красит."""
-    return [{"text": t, "hit": i % 2 == 1} for i, t in enumerate(re.split("[\x01\x02]", marked)) if t]
+def _trigrams(word: str) -> set[str]:
+    padded = f"  {word} "  # как pg_trgm: два пробела перед словом, один после
+    return {padded[i : i + 3] for i in range(len(padded) - 2)}
+
+
+def _similar(a: set[str], b: set[str]) -> bool:
+    shared = len(a & b)
+    return shared / (len(a) + len(b) - shared) >= LIKE
+
+
+def _parts(marked: str, q: str) -> list[dict]:
+    """Название из ts_headline с метками \\x01…\\x02 → куски с флагом совпадения: фронт только красит.
+
+    ts_headline не видит слов, найденных по триграммам («нейроные» → «нейронные»): их отмечаем здесь,
+    если в запросе нет операторов — с операторами matches похожие и не ищет.
+    """
+    pieces = [(t, i % 2 == 1) for i, t in enumerate(re.split("[\x01\x02]", marked))]
+    query = [] if OPERATORS.search(q.lower()) else [_trigrams(w) for w in plain(q).split() if len(w) >= 3]
+    if query:
+        pieces = [
+            (word, hit or (len(word) >= 3 and any(_similar(_trigrams(_ru(word)), w) for w in query)))
+            for text, hit in pieces
+            for word in ([text] if hit else re.split(r"([^\W_]+)", text))
+        ]
+    out: list[dict] = []
+    for text, hit in pieces:
+        if not text:
+            continue
+        if out and out[-1]["hit"] == hit:
+            out[-1]["text"] += text
+        else:
+            out.append({"text": text, "hit": hit})
+    return out
 
 
 def _is_uuid(v: str) -> bool:

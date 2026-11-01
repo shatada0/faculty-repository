@@ -17,6 +17,19 @@ export interface Person {
   shortName?: string // "Иванов И. И.", from the server for author lists (admin only)
 }
 
+/** POST /admin/people/:id/orcid-import — DOIs from the ORCID profile turned into publication drafts. */
+export interface OrcidImport {
+  found: number // DOIs in the profile
+  created: number // new drafts
+  known: number // already in the repository
+  notFound: string[] // Crossref doesn't know them
+  failed: string[]
+  message: string // the summary to show as is
+}
+
+// PATCH body: null clears a field, a missing key leaves it unchanged
+export type PersonPatch = { [K in keyof Person]?: Person[K] | null }
+
 export interface AuthorRef {
   personId?: string
   displayName: string
@@ -141,7 +154,11 @@ export interface WorkView {
   closedNote?: string
 }
 
-export type PublicWork = Work & { view: WorkView }
+/** A title split by the server, `hit` marks words that matched the search query. */
+export type TitlePart = { text: string; hit: boolean }
+
+/** `titleParts` comes with GET /works?q= only: the title with matched words marked. */
+export type PublicWork = Work & { view: WorkView; titleParts?: TitlePart[] }
 
 export interface FieldMeta {
   source: FieldSource
@@ -313,6 +330,6 @@ export interface FileLink {
 
 /** GET /works/suggest — search box suggestions; `parts` is the title split by the server, `hit` marks matched words. */
 export interface Suggestions {
-  works: { id: string; type: WorkType; title: string; year?: number; parts: { text: string; hit: boolean }[] }[]
+  works: { id: string; type: WorkType; title: string; year?: number; parts: TitlePart[] }[]
   people: { id: string; fullName: string }[]
 }

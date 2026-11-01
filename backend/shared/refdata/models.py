@@ -17,6 +17,7 @@ class Department(Base):
 class Journal(Base):
     __tablename__ = "journals"
     issn: Mapped[str] = mapped_column(Text, primary_key=True)
+    eissn: Mapped[str | None] = mapped_column(Text, unique=True)  # электронный ISSN: Crossref отдаёт оба
     name: Mapped[str] = mapped_column(Text)
     lists: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
 

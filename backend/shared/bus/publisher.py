@@ -1,5 +1,6 @@
 """Публикация событий в topic-exchange events."""
 
+from typing import Any
 from uuid import uuid4
 
 import aio_pika
@@ -27,14 +28,19 @@ class MessageBusPublisher:
     async def start(self) -> None:
         self._exchange = await declare_exchange(self._channel)
 
-    async def publish(self, topic: str, dto: BaseModel) -> None:
-        ctx = get_context()
+    async def publish(
+        self, topic: str, dto: BaseModel | dict[str, Any], *, trace_id: str | None = None, user_id: str | None = None
+    ) -> None:
+        """trace_id и user_id явно — у события из outbox: контекст запроса, который его записал, уже закончился."""
+        if trace_id is None:
+            ctx = get_context()
+            trace_id, user_id = ctx.trace_id, ctx.user_id
         envelope = BusMessage(
             type=topic,
             source=app_config.service_name,
-            trace_id=ctx.trace_id,
-            user_id=ctx.user_id,
-            payload=dto.model_dump(mode="json"),
+            trace_id=trace_id,
+            user_id=user_id,
+            payload=dto if isinstance(dto, dict) else dto.model_dump(mode="json"),
         )
         message = aio_pika.Message(
             envelope.model_dump_json().encode(),
@@ -44,9 +50,8 @@ class MessageBusPublisher:
             type=topic,
         )
         try:
-            await self._exchange.publish(message, routing_key=topic)
+            await self._exchange.publish(message, routing_key=topic)  # канал с publisher confirms: ждём подтверждения
         except Exception:
-            # ponytail: публикация после коммита упала — событие потеряно; transactional outbox, когда это станет важно
             logger.exception("Событие не опубликовано", extra={"topic": topic})
             raise
         logger.info("Событие опубликовано", extra={"topic": topic, "message_id": message.message_id})

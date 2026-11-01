@@ -33,10 +33,12 @@ class FakeStorage:
 
 
 class FakePublisher:
-    def __init__(self) -> None:
-        self.published: list[tuple[str, BaseModel]] = []
+    """Из outbox событие приходит словарём (payload), от воркера — моделью."""
 
-    async def publish(self, topic: str, dto: BaseModel) -> None:
+    def __init__(self) -> None:
+        self.published: list[tuple[str, BaseModel | dict]] = []
+
+    async def publish(self, topic: str, dto: BaseModel | dict, **_: str | None) -> None:
         self.published.append((topic, dto))
 
 

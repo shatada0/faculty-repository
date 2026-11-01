@@ -9,6 +9,7 @@ from catalog_service.src.api.schemas import ClientError, Suggest
 from catalog_service.src.dependencies import Filters, Q, Service, WorkType
 from shared.config import UPLOAD_LIMITS
 from shared.logging import get_logger
+from shared.storage import content_disposition
 
 router = APIRouter(prefix="/api", tags=["Catalog"])
 logger = get_logger("client")
@@ -98,6 +99,28 @@ async def person_works(
     role: Literal["author", "supervisor"] = "author",
 ) -> dict:
     return await service.person_works(person_id, filters, type_=type, role=role)
+
+
+Year = Annotated[int | None, Query(ge=1900, le=2100)]
+DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+def _docx(body: bytes, filename: str) -> Response:
+    return Response(body, media_type=DOCX, headers={"Content-Disposition": content_disposition("attachment", filename)})
+
+
+@router.get("/people/{person_id:uuid}/works.docx")
+async def person_works_docx(service: Service, person_id: UUID, year: Year = None) -> Response:
+    """Список трудов человека по ГОСТ для отчёта."""
+    return _docx(*await service.works_list(person_id=person_id, year=year))
+
+
+@router.get("/departments/works.docx")
+async def department_works_docx(
+    service: Service, department: Annotated[str, Query(max_length=300)], year: Year = None
+) -> Response:
+    """Список трудов сотрудников кафедры по ГОСТ для отчёта."""
+    return _docx(*await service.works_list(department=department, year=year))
 
 
 @router.get("/people/{person_id:uuid}/metrics")

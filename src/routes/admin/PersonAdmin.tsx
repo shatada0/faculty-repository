@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, getAdminPerson, mergePerson, patchPerson } from '@/api'
-import type { AdminPersonCard, Person, PersonKind } from '@/api/types'
+import { ApiError, getAdminPerson, importOrcid, mergePerson, patchPerson } from '@/api'
+import type { AdminPersonCard, OrcidImport, Person, PersonKind, PersonPatch } from '@/api/types'
 import { PersonPicker } from '@/components/AuthorsEditor'
 import { NotFound, useTitle } from '@/components/Layout'
 import { StatusBadge, TypeIcon } from '@/components/WorkCard'
@@ -10,6 +10,39 @@ import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner,
 import { personKindLabels } from '@/lib/labels'
 import { useDepartments } from '@/routes/People'
 import { invalidatePeople } from './People'
+
+function OrcidImportCard({ person }: { person: AdminPersonCard }) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<OrcidImport>()
+  const [error, setError] = useState<string>()
+  async function run() {
+    setBusy(true)
+    setError(undefined)
+    try {
+      setResult(await importOrcid(person.id))
+      await invalidatePeople(qc)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Ошибка импорта')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Card className="space-y-3 p-4">
+      <h2 className="text-xl font-bold">Импорт из ORCID</h2>
+      <p className="text-sm text-ink-2">Работы с DOI из профиля {person.orcid} станут черновиками публикаций, заполненными по Crossref. Уже известные DOI пропускаются.</p>
+      <Button variant="outline" size="sm" onClick={run} loading={busy}>Импортировать</Button>
+      {result && (
+        <Alert tone="blue">
+          {result.message}
+          {result.notFound.length > 0 && <span className="mt-1 block text-sm">Нет в Crossref: {result.notFound.join(', ')}</span>}
+        </Alert>
+      )}
+      {error && <Alert tone="red">{error}</Alert>}
+    </Card>
+  )
+}
 
 function PersonForm({ person }: { person: AdminPersonCard }) {
   const qc = useQueryClient()
@@ -23,10 +56,11 @@ function PersonForm({ person }: { person: AdminPersonCard }) {
     e.preventDefault()
     setBusy(true)
     try {
-      const body: Partial<Person> = {
-        fullName: f.fullName.trim(), kind: f.kind, department: f.department || undefined, position: f.position || undefined,
-        academicDegree: f.academicDegree || undefined, academicTitle: f.academicTitle || undefined, orcid: f.orcid || undefined,
-        affiliation: f.affiliation || undefined, aliases: f.aliasesText.split('\n').map((s) => s.trim()).filter(Boolean),
+      // null, not undefined: JSON drops undefined and the server would keep the old value
+      const body: PersonPatch = {
+        fullName: f.fullName.trim(), kind: f.kind, department: f.department || null, position: f.position || null,
+        academicDegree: f.academicDegree || null, academicTitle: f.academicTitle || null, orcid: f.orcid || null,
+        affiliation: f.affiliation || null, aliases: f.aliasesText.split('\n').map((s) => s.trim()).filter(Boolean),
       }
       const saved = await patchPerson(person.id, body)
       qc.setQueryData(['admin-person', person.id], saved)
@@ -113,6 +147,7 @@ export default function PersonAdmin() {
         <Card className="p-4"><PersonForm key={JSON.stringify(p)} person={p} /></Card>
 
         <div className="space-y-5">
+          {p.orcid && <OrcidImportCard person={p} />}
           <Card className="space-y-3 p-4">
             <h2 className="flex items-center gap-2 text-xl font-bold">Объединить с дублем</h2>
             <p className="text-sm text-ink-2">Выберите профиль-дубль: все его работы перейдут к этому профилю, а старая ссылка будет вести сюда.</p>

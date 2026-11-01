@@ -3,14 +3,12 @@ import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 
 import { useNavigate } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { getSuggestions } from '@/api'
-import type { Suggestions } from '@/api/types'
 import { workTypeLabels } from '@/lib/labels'
 import { Input, cn } from './ui'
+import { marked } from './WorkCard'
 
 type Option = { id: string; to: string; label: ReactNode; note: string }
 
-const marked = (parts: Suggestions['works'][number]['parts']) =>
-  parts.map((p, i) => (p.hit ? <mark key={i} className="bg-transparent font-bold text-ink">{p.text}</mark> : p.text))
 
 /** Enter on a highlighted suggestion opens it; Enter without one submits the surrounding form (full results). */
 export function SearchBox({ value, onChange, className, inputClassName, ...input }: Omit<ComponentProps<'input'>, 'value' | 'onChange'> & {

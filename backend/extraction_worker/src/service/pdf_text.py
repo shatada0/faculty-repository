@@ -23,7 +23,7 @@ def main() -> None:
     if reader.is_encrypted and reader.decrypt("") == PasswordType.NOT_DECRYPTED:
         sys.exit(PASSWORD_EXIT)
     pages = [page.extract_text() or "" for page in reader.pages[:MAX_PAGES]]
-    sys.stdout.write(json.dumps({"pages": pages}, ensure_ascii=False))
+    sys.stdout.buffer.write(json.dumps({"pages": pages}, ensure_ascii=False).encode())  # UTF-8 и на Windows
 
 
 if __name__ == "__main__":

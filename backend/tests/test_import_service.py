@@ -18,6 +18,7 @@ from import_service.src.service.import_service import ImportService
 from shared.auth.session import require_moderator
 from shared.bus.consumer import Delivery
 from shared.bus.contracts import ItemExtractedDTO
+from shared.bus.outbox import OutboxRelay
 from shared.exceptions import BadRequestError
 from shared.imports import Import, ImportItem
 from shared.imports.tables import TooManyRows, read_table
@@ -172,7 +173,9 @@ async def test_table_import(demo: dict) -> None:
         "Орлов Д. С.;Без года;Тезисы;Сборник;;\n"
         "Орлов Д. С.;Ссылка;Тезисы;Сборник;20x6;\n"
     )
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
+    service = ImportService(
+        uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), relay(FakePublisher())
+    )
     file = UploadFile(io.BytesIO(rows.encode()), filename="pubs.csv", size=len(rows.encode()))
     imp = await service.create("table", "publication", [file], None, demo["user"])
     assert imp["status"] == "done"
@@ -195,9 +198,23 @@ async def test_table_import(demo: dict) -> None:
     }
 
 
+def relay(publisher: FakePublisher) -> OutboxRelay:
+    return OutboxRelay(uow_write_factory, publisher)
+
+
+async def item_ids(import_id: uuid.UUID) -> list[uuid.UUID]:
+    async with uow_write_factory() as uow:
+        return list(await uow.session.scalars(select(ImportItem.id).where(ImportItem.import_id == import_id)))
+
+
+def sent(publisher: FakePublisher) -> list[uuid.UUID]:
+    """id элементов в событиях import_item.created, ушедших из outbox."""
+    return [uuid.UUID(payload["item_id"]) for _, payload in publisher.published]
+
+
 async def test_archive_item_from_worker(demo: dict) -> None:
     storage, publisher = FakeStorage(), FakePublisher()
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, publisher)
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, relay(publisher))
     imp = Import(
         id=uuid.uuid7(), kind="archive", work_type="vkr", file_name="a.zip", status="processing", created_by="Модератор"
     )
@@ -252,13 +269,15 @@ async def test_archive_item_from_worker(demo: dict) -> None:
     # «Повторить»: файл с ошибкой снова уходит воркеру
     detail = await service.retry(imp.id)
     assert detail["import"]["status"] == "processing" and detail["items"][1]["status"] == "pending"
-    assert [dto.item_id for _, dto in publisher.published] == [items[1].id]
+    assert await service.outbox.flush() and sent(publisher) == [items[1].id]
     with pytest.raises(BadRequestError):
         await service.retry(imp.id)  # ошибок больше нет
 
 
 async def test_unknown_department_leaves_no_ai_badge(demo: dict) -> None:
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
+    service = ImportService(
+        uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), relay(FakePublisher())
+    )
     imp = Import(
         id=uuid.uuid7(), kind="archive", work_type="vkr", file_name="b.zip", status="processing", created_by="Модератор"
     )
@@ -289,7 +308,7 @@ META = (
 
 async def test_archive_upload_with_meta_table(demo: dict) -> None:
     storage, publisher = FakeStorage(), FakePublisher()
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, publisher)
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), storage, relay(publisher))
     zipped = _raw_names_zip("папка/Табличный.pdf".encode("cp866"))  # как пишет 7-Zip на русской Windows
     files = [_upload("Архив.zip", zipped), _upload("Отдельный.pdf", b"%PDF-1.4")]
 
@@ -305,10 +324,11 @@ async def test_archive_upload_with_meta_table(demo: dict) -> None:
     assert (imp["fileName"], imp["metaTableName"]) == ("Архив.zip и ещё 1", "meta.csv")
     detail = await service.get(uuid.UUID(imp["id"]), None)
     assert [i["ref"] for i in detail["items"]] == ["Табличный.pdf", "Отдельный.pdf"]
-    assert len(publisher.published) == 2 and not any(k.endswith(".zip") for k in storage.objects)
+    assert await service.outbox.flush() and len(sent(publisher)) == 2
+    assert not any(k.endswith(".zip") for k in storage.objects)
 
     # ИИ «уверен» в другом ФИО и узнал курсовую: таблица ВКР её дисциплину не теряет, а профиль под ФИО от ИИ не заводится
-    item_id = publisher.published[0][1].item_id
+    item_id = sent(publisher)[0]
     fields = {"title": "Тема от ИИ", "authors": ["Выдуманный Автор Ии"], "year": 2026, "workType": "coursework"}
     meta = {k: {"source": "ai", "confidence": 0.85} for k in ("title", "authors", "year")}
     await service.on_extracted(ItemExtractedDTO(item_id=item_id, fields=fields, field_meta=meta), DELIVERY)
@@ -327,32 +347,39 @@ class BrokenStorage(FakeStorage):
 
 
 class BrokenPublisher(FakePublisher):
-    async def publish(self, topic, dto) -> None:
+    async def publish(self, topic, dto, **_) -> None:
         if self.published:
             raise ConnectionError("RabbitMQ недоступен")
         await super().publish(topic, dto)
 
 
-async def test_failures_end_in_error_not_endless_queue(demo: dict) -> None:
-    """Шина не приняла событие или не сохранился результат — элементы в ошибке, импорт готов, «Повторить» доступна."""
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), BrokenStorage(), BrokenPublisher())
+async def test_bus_down_keeps_events_in_outbox(demo: dict) -> None:
+    """Шина приняла одно событие из трёх: остальные ждут в outbox и уходят, когда она вернётся. Элементы — в очереди."""
+    broken = BrokenPublisher()
+    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), BrokenStorage(), relay(broken))
     files = [_upload(f"{n}.pdf", b"%PDF-1.4") for n in (1, 2, 3)]
     imp = await service.create("archive", "vkr", files, None, demo["user"])
+    assert await service.outbox.flush() is False and len(sent(broken)) == 1
     detail = await service.get(uuid.UUID(imp["id"]), None)
-    assert [i["status"] for i in detail["items"]] == ["pending", "error", "error"]
-    assert detail["items"][1]["error"] == "Файл не отправлен на разбор"
+    assert [i["status"] for i in detail["items"]] == ["pending"] * 3
 
-    item_id = service.publisher.published[0][1].item_id
+    service.outbox.publisher = healthy = FakePublisher()
+    assert await service.outbox.flush() and len(sent(healthy)) == 2
+    assert set(sent(broken) + sent(healthy)) == set(await item_ids(uuid.UUID(imp["id"])))
+    assert await service.outbox.flush() and len(sent(healthy)) == 2  # опубликованное из outbox удалено
+
+    # не сохранился результат воркера — элемент в ошибку, «Повторить» его увидит
     fields = {"title": "ВКР, которую не сохранить", "year": 2026}
     meta = {k: {"source": "ai", "confidence": 0.85} for k in fields}
-    await service.on_extracted(ItemExtractedDTO(item_id=item_id, fields=fields, field_meta=meta), DELIVERY)
+    await service.on_extracted(ItemExtractedDTO(item_id=sent(broken)[0], fields=fields, field_meta=meta), DELIVERY)
     detail = await service.get(uuid.UUID(imp["id"]), None)
-    assert detail["import"]["status"] == "done" and detail["import"]["stats"]["errors"] == 3
     assert detail["items"][0]["error"] == "Не удалось сохранить результат разбора"
 
 
 async def test_preview_and_table_refs_match_excel_lines(demo: dict) -> None:
-    service = ImportService(uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), FakePublisher())
+    service = ImportService(
+        uow_write_factory, WorkRepository(), PersonRepository(), FakeStorage(), relay(FakePublisher())
+    )
     rows = "Авторы;Название;Вид;Журнал/сборник;Год\n\nОрлов Д. С.;Строка через пустую;Тезисы;Сборник;2026\n"
     preview = await service.preview("publication", _upload("p.csv", rows.encode()))
     assert [r["line"] for r in preview["rows"]] == [3]

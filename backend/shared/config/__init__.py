@@ -23,6 +23,9 @@ class AppConfig(BaseSettings):
     service_name: str = "app"
     site_domain: str = "localhost"
     crossref_mailto: str = ""
+    # OpenAlex без ключа делит $0.10 в сутки на весь IP (в сети вуза — на всех): ночные цитирования его съедят.
+    # Ключ бесплатный ($1 в сутки) — секрет openalex_api_key.
+    openalex_api_key: str = ""
 
 
 class DatabaseConfig(BaseSettings):

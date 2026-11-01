@@ -15,9 +15,7 @@ Moderator = Annotated[SessionUser, Depends(require_moderator)]
 
 
 def build_service(app: FastAPI) -> ImportService:
-    return ImportService(
-        uow_write_factory, WorkRepository(), PersonRepository(), app.state.storage, app.state.publisher
-    )
+    return ImportService(uow_write_factory, WorkRepository(), PersonRepository(), app.state.storage, app.state.outbox)
 
 
 def get_service(request: Request) -> ImportService:

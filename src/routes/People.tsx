@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
-import { getDepartments, getStaff } from '@/api'
+import { departmentWorksDocxUrl, getDepartments, getStaff } from '@/api'
 import { EmptyState, ErrorState, Input, Select, Skeleton } from '@/components/ui'
 import { plural } from '@/lib/format'
 import { useTitle } from '@/components/Layout'
@@ -37,6 +37,9 @@ export default function People() {
             {departments.map((d) => <option key={d.name}>{d.name}</option>)}
           </Select>
         </label>
+        {department && import.meta.env.VITE_USE_MOCKS !== 'true' && (
+          <a href={departmentWorksDocxUrl(department)} className="self-center">Список трудов кафедры (docx)</a>
+        )}
         <label className="flex items-center gap-2 text-ink-2">Сортировка
           <Select value={sort} onChange={(e) => set('sort', e.target.value === 'name' ? '' : e.target.value)} className="w-auto">
             <option value="name">по ФИО</option>

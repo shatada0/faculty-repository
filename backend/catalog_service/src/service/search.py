@@ -60,11 +60,11 @@ def _subjects(scheme: str) -> Select:
 
 
 def _journal_lists() -> Select:
-    """Как WorkRepository.journal_lists: по ISSN, а если ISSN нет в справочнике — по точному названию журнала."""
+    """Как WorkRepository.journal_lists: по любому из двух ISSN, а если ISSN нет в справочнике — по точному названию журнала."""
     venue = D["venue"].astext
     known = aliased(Journal)
-    issn_known = select(known.issn).where(known.issn == Work.issn).exists()
-    journal = or_(Journal.issn == Work.issn, and_(~issn_known, Journal.name == venue))
+    issn_known = select(known.issn).where(or_(known.issn == Work.issn, known.eissn == Work.issn)).exists()
+    journal = or_(Journal.issn == Work.issn, Journal.eissn == Work.issn, and_(~issn_known, Journal.name == venue))
     return (
         select(Work.id.label("work_id"), func.unnest(Journal.lists).label("value"))
         .join(Journal, journal)

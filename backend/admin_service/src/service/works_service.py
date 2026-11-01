@@ -6,6 +6,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import UploadFile
+from pydantic import ValidationError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import distinct_on
 
@@ -16,7 +17,7 @@ from shared.db.base import now
 from shared.exceptions import BadRequestError, ConflictError, NotFoundError, UnprocessableError
 from shared.logging import get_logger
 from shared.refdata import Classifier
-from shared.repository.people_repository import PersonRepository
+from shared.repository.people_repository import PersonRepository, add_name, lock_names
 from shared.repository.works_repository import WorkRepository, admin_options, matches
 from shared.storage import Storage, detect_type
 from shared.uow import UnitOfWork, UnitOfWorkFactory
@@ -435,38 +436,154 @@ class WorkService:
             if w.type != "publication":
                 raise BadRequestError("DOI бывает только у публикаций")
         incoming = await crossref.lookup(doi)
-        conflicts = []
         async with self.uow_factory() as uow:
             w = await self._load(uow, work_id)
-            if "authors" in incoming:
-                incoming["authors"] = [await self._ref_to(uow, name) for name in incoming["authors"]]
-            current = work_dict(w)
-            changes: dict[str, Any] = {"doi": doi}
-            for key in DOI_FIELDS:
-                if key not in incoming:
-                    continue
-                if not _no_authors(current[key]) and key in w.field_meta:
-                    if same(current[key], incoming[key]):
-                        continue
-                    if key not in overwrite:
-                        conflicts.append(
-                            {
-                                "field": key,
-                                "label": L.FIELD.get(key, key),
-                                "current": _shown(current[key]),
-                                "incoming": _shown(incoming[key]),
-                            }
-                        )
-                        continue
-                changes[key] = incoming[key]
-            changed = await self._save(
-                uow, w, parse_write("publication", changes), parse_write("publication", current), source="doi"
-            )
+            changed, conflicts, by_orcid = await self._apply_doi(uow, w, doi, incoming, overwrite)
+            if by_orcid:  # ORCID дал человеку новое написание — оно же у нераспознанных в прошлых работах
+                await self._link_known(uow, user)
         self._audit_edit(work_id, changed, user, "doi")
         return {"work": await self.get(work_id), "conflicts": conflicts}
 
-    async def _ref_to(self, uow: UnitOfWork, name: str, fallback: str = "external") -> dict:
-        person = await self.people.match_exact(uow, name)
+    async def _apply_doi(
+        self, uow: UnitOfWork, w: Work, doi: str, incoming: dict[str, Any], overwrite: list[str]
+    ) -> tuple[list[str], list[dict], bool]:
+        """Поля из Crossref в работу. → изменённые поля, конфликты, был ли у авторов ORCID."""
+        conflicts = []
+        orcids = incoming.pop("author_orcids", None) or []
+        citations = incoming.pop("citations", None)
+        if known := await self.works.journal_issn(uow, incoming.pop("issns", None) or []):
+            incoming["issn"] = known  # тот ISSN, по которому справочник знает журнал
+        if "authors" in incoming:
+            names = incoming["authors"]
+            orcids += [None] * (len(names) - len(orcids))
+            incoming["authors"] = [await self._ref_to(uow, n, orcid) for n, orcid in zip(names, orcids, strict=True)]
+        current = work_dict(w)
+        changes: dict[str, Any] = {"doi": doi}
+        for key in DOI_FIELDS:
+            if key not in incoming:
+                continue
+            if not _no_authors(current[key]) and key in w.field_meta:
+                if same(current[key], incoming[key]):
+                    continue
+                if key not in overwrite:
+                    conflicts.append(
+                        {
+                            "field": key,
+                            "label": L.FIELD.get(key, key),
+                            "current": _shown(current[key]),
+                            "incoming": _shown(incoming[key]),
+                        }
+                    )
+                    continue
+            changes[key] = incoming[key]
+        changed = await self._save(
+            uow, w, parse_write("publication", changes), parse_write("publication", current), source="doi"
+        )
+        if citations is not None:  # ночная команда citations потом обновит и добавит OpenAlex
+            await self.works.save_citations(uow, [(w.id, "crossref", citations)])
+        return changed, conflicts, any(orcids)
+
+    async def _link_known(self, uow: UnitOfWork, user: SessionUser) -> None:
+        linked = await self.people.link_known(uow)
+        await self.works.refresh_search(uow, {i for _, _, ids in linked for i in ids})
+        for p, name, ids in linked:
+            logger.info(
+                "Автор сопоставлен",
+                extra={
+                    "audit": True,
+                    "auto": True,
+                    "person_id": str(p.id),
+                    "display_name": name,
+                    "works": len(ids),
+                    "by": str(user.id),
+                },
+            )
+
+    async def import_orcid(self, person_id: UUID, user: SessionUser) -> dict:
+        """Работы с DOI из публичного профиля ORCID человека → черновики публикаций, заполненные по Crossref.
+
+        Уже известные DOI пропускаются (кроме отклонённых работ), совпавшие по названию и году — черновики-дубли.
+        Авторы сопоставляются как при заполнении по DOI, а в конце — link_known: «Oseledets I. V.» найдёт
+        «Оселедец Иван Валерьевич» по транслиту, если однофамилец с такими инициалами один.
+        """
+        async with self.uow_factory() as uow:
+            p = await self.people.resolve(uow, person_id)
+            if p is None:
+                raise NotFoundError("Человек не найден")
+            if not p.orcid:
+                raise BadRequestError("У человека не указан ORCID", code="no_orcid")
+            orcid = p.orcid
+        dois = await crossref.orcid_dois(orcid)
+        async with self.uow_factory() as uow:
+            known = set(
+                await uow.session.scalars(
+                    select(func.lower(Work.doi)).where(func.lower(Work.doi).in_(dois), Work.status != "rejected")
+                )
+            )
+        found = await crossref.lookup_many([d for d in dois if d not in known])
+        created, failed = [], []
+        for doi, incoming in found.items():
+            w = Work(
+                id=uuid.uuid7(), type="publication", status="draft", details={}, field_meta={}, keywords=[],
+                created_by=user.id,
+            )  # fmt: skip
+            try:
+                async with self.uow_factory() as uow:
+                    blank_card = template("publication", now().year)
+                    await self._save(
+                        uow, w, parse_write("publication", blank_card), parse_write("publication", blank_card)
+                    )
+                    w = await self._load(uow, w.id)  # со связями: work_dict в _apply_doi читает авторов
+                    await self._apply_doi(uow, w, doi, incoming, [])
+                    if dup := await self.works.find_duplicate(uow, "publication", w.title, w.year, exclude=w.id):
+                        w.duplicate_of = dup.id
+            # одна кривая запись не роняет остальные
+            except (BadRequestError, UnprocessableError, ValidationError) as e:
+                logger.warning("Работа из ORCID не создана", extra={"doi": doi, "error": repr(e)})
+                failed.append(doi)
+                continue
+            created.append(w.id)
+        if created:
+            async with self.uow_factory() as uow:
+                await self._link_known(uow, user)
+        logger.info(
+            "Импорт из ORCID",
+            extra={
+                "audit": True,
+                "person_id": str(person_id),
+                "orcid": orcid,
+                "dois": len(dois),
+                "drafts": len(created),  # не «created»: так называется поле LogRecord
+                "known": len(known),
+                "not_found": len(dois) - len(known) - len(found),
+                "failed": len(failed),
+                "by": str(user.id),
+            },
+        )
+        not_found = [d for d in dois if d not in known and d not in found]
+        parts = [f"Новых черновиков: {len(created)}", f"уже в базе: {len(known)}"]
+        parts += [f"нет в Crossref: {len(not_found)}"] * bool(not_found) + [f"с ошибкой: {len(failed)}"] * bool(failed)
+        return {
+            "found": len(dois),
+            "created": len(created),
+            "known": len(known),
+            "notFound": not_found,
+            "failed": failed,
+            "message": f"DOI в профиле ORCID: {len(dois)}. " + ", ".join(parts) + ".",
+        }
+
+    async def _ref_to(self, uow: UnitOfWork, name: str, orcid: str | None = None, fallback: str = "external") -> dict:
+        """Автор из Crossref: сначала по ORCID, потом по точному написанию.
+
+        Найденный по ORCID человек запоминает это написание («Oseledets I.»): работы без ORCID с тем же
+        написанием дальше сопоставятся сами.
+        """
+        person = await self.people.by_orcid(uow, orcid) if orcid else None
+        if person:
+            await lock_names(uow)
+            add_name(person, name)
+        else:
+            person = await self.people.match_exact(uow, name)
         if person:
             return {"personId": str(person.id), "displayName": name, "kind": person.kind}
         return {"personId": None, "displayName": name, "kind": fallback}
