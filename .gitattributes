@@ -7,3 +7,4 @@
 *.zip binary
 # демо-таблицы как из Excel: CRLF и BOM храним байт в байт
 public/mock/*.csv -text
+демо/**/*.csv -text
