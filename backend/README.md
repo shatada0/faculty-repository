@@ -40,6 +40,7 @@ LLM: на машине с NVIDIA — `docker compose --profile gpu up -d` (vLLM)
 | `python -m admin_service.src.refdata load journals\|classifiers\|directions <файл.csv>` | справочники upsert'ом; форматы — в докстринге модуля |
 | `python -m admin_service.src.seed people staff.csv` | сотрудники кафедр: «ФИО», «Кафедра», «Должность», «Степень», «Звание», «ORCID», «SPIN», «AuthorID» |
 | `python -m admin_service.src.seed demo` | демо-данные моков; в базе с работами не запускается |
+| `sh scripts/demo-reset.sh` (на хосте) | чистый стенд для показа: копия старой базы в том, новая база, `seed demo`, входы `moderator` и `orlov` |
 | `docker compose run --rm backup` / `… backup restore-check` | ночной бэкап и еженедельная проверка восстановления |
 | `python -m admin_service.src.sync` | ночью таймером хоста: поля работ по Crossref (кроме правленных руками) и новые статьи людей с ORCID из ORCID и OpenAlex |
 | `python -m admin_service.src.citations` | ночью таймером хоста: цитирования по DOI из Crossref и OpenAlex в `work_citations`, по ним — индекс Хирша |

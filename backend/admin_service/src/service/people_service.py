@@ -283,6 +283,25 @@ class PeopleService:
             await self._link(uow, p, display_name, user)
         return person_dict(p, admin=True)
 
+    async def match_external(self, names: list[str], user: SessionUser) -> dict:
+        """«Внешний автор» у многих написаний одной транзакцией. Уже привязанное (другая вкладка, импорт) пропускается."""
+        wanted = list(dict.fromkeys(n.strip() for n in names if n.strip()))
+        async with self.uow_factory() as uow:
+            await lock_names(uow)
+            unmatched = set(
+                await uow.session.scalars(
+                    select(WorkPerson.display_name).where(
+                        WorkPerson.person_id.is_(None), WorkPerson.display_name.in_(wanted)
+                    )
+                )
+            )
+            done = [name for name in wanted if name in unmatched]
+            for name in done:
+                p = Person(kind="external", full_name=name)
+                self.people.add(uow, p)
+                await self._link(uow, p, name, user)
+        return {"done": len(done)}
+
     async def merge(self, main_id: UUID, from_id: UUID, user: SessionUser) -> dict:
         """Одна транзакция: ссылки и учётки — на основного, имена — к нему, пустые поля — из второго. Отмены нет."""
         async with self.uow_factory() as uow:

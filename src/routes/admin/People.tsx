@@ -1,16 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { exportPeople, getAdminPeople, getUnmatched, matchAuthor } from '@/api'
+import { exportPeople, getAdminPeople, getUnmatched, matchAuthor, matchExternal, refreshAll } from '@/api'
 import type { PersonKind, UnmatchedAuthor } from '@/api/types'
 import { NewPersonDialog, PersonPicker } from '@/components/AuthorsEditor'
-import { Alert, Badge, Button, Card, Count, EmptyState, ErrorState, Input, Pagination, Select, Spinner, Tabs } from '@/components/ui'
+import { Alert, Badge, Button, Card, Count, EmptyState, ErrorState, Input, Pagination, Select, Spinner, Tabs, useDebounced } from '@/components/ui'
+import { plural } from '@/lib/format'
 import { personKindLabels } from '@/lib/labels'
 import { useDepartments } from '@/routes/People'
 import { useTitle } from '@/components/Layout'
-
-export const invalidatePeople = (qc: ReturnType<typeof useQueryClient>) =>
-  qc.invalidateQueries({ predicate: (x) => String(x.queryKey[0]).startsWith('admin') || ['works', 'work', 'person', 'personWorks', 'staff', 'facets'].includes(String(x.queryKey[0])) })
 
 function UnmatchedCard({ u }: { u: UnmatchedAuthor }) {
   const qc = useQueryClient()
@@ -22,7 +20,7 @@ function UnmatchedCard({ u }: { u: UnmatchedAuthor }) {
     setBusy(true)
     try {
       await matchAuthor(u.displayName, personId, kind)
-      await invalidatePeople(qc)
+      await refreshAll(qc)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка')
       setBusy(false)
@@ -64,13 +62,39 @@ function UnmatchedCard({ u }: { u: UnmatchedAuthor }) {
 }
 
 function Unmatched() {
+  const qc = useQueryClient()
   const q = useQuery({ queryKey: ['admin-unmatched'], queryFn: getUnmatched })
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; text: string }>()
   if (q.isPending) return <Spinner />
   if (q.isError) return <ErrorState error={q.error} onRetry={() => q.refetch()} />
   if (!q.data.items.length) return <EmptyState>Все авторы сопоставлены с людьми системы</EmptyState>
+  // co-authors from other universities: one click instead of «Внешний автор» on each card
+  const rest = q.data.items.filter((u) => !u.suggestions.length).map((u) => u.displayName)
+  async function markRest() {
+    if (!window.confirm(`Отметить ${rest.length} ${plural(rest.length, ['написание', 'написания', 'написаний'])} внешними авторами? Похожих людей для них в системе нет.`)) return
+    setBusy(true)
+    setResult(undefined)
+    try {
+      const { done } = await matchExternal(rest)
+      await refreshAll(qc)
+      setResult({ ok: true, text: `Отмечено внешними авторами: ${done}` })
+    } catch (e) {
+      setResult({ ok: false, text: e instanceof Error ? e.message : 'Ошибка' })
+    } finally {
+      setBusy(false)
+    }
+  }
   return (
     <div className="space-y-3">
       <Alert tone="blue">Имена из импортов, не связанные ни с кем. После сопоставления все работы с этим написанием во всех импортах привяжутся к выбранному человеку.</Alert>
+      {rest.length > 1 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <Button variant="outline" size="sm" loading={busy} onClick={markRest}>Остальные — внешние авторы ({rest.length})</Button>
+          <span className="text-sm text-muted">все, для кого похожих людей не нашли</span>
+        </div>
+      )}
+      {result && <Alert tone={result.ok ? 'blue' : 'red'}>{result.text}</Alert>}
       {q.data.items.map((u) => <UnmatchedCard key={u.displayName} u={u} />)}
     </div>
   )
@@ -90,11 +114,8 @@ export default function AdminPeople() {
   const [text, setText] = useState(query.q)
   const [creating, setCreating] = useState(false)
   const [exportErr, setExportErr] = useState<string>()
-  useEffect(() => {
-    if (text.trim() === query.q) return
-    const t = setTimeout(() => set('q', text.trim()), 300)
-    return () => clearTimeout(t)
-  }, [text])
+  const typed = useDebounced(text.trim(), 300)
+  useEffect(() => { if (typed !== query.q) set('q', typed) }, [typed])
 
   return (
     <div className="space-y-4">

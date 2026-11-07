@@ -6,29 +6,22 @@ import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, us
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { GripVertical, Link2, Link2Off, Trash2 } from 'lucide-react'
-import { createPerson, getAdminPeople } from '@/api'
+import { createPerson, getAdminPeople, refreshAll } from '@/api'
 import type { AuthorRef, Person, PersonKind } from '@/api/types'
 import { personKindLabels } from '@/lib/labels'
 import { useDepartments } from '@/routes/People'
-import { Button, Dialog, Field, Input, Select, cn } from './ui'
+import { Button, Dialog, Field, Input, Select, cn, useDebounced } from './ui'
 
 /** Search people in the system and pick one. */
 export function PersonPicker({ initial = '', onPick, exclude, autoFocus }: { initial?: string; onPick: (p: Person) => void; exclude?: string; autoFocus?: boolean }) {
   const [q, setQ] = useState(initial)
-  const [debounced, setDebounced] = useState(initial)
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(q.trim()), 250)
-    return () => clearTimeout(t)
-  }, [q])
+  const debounced = useDebounced(q.trim())
   const query = { q: debounced, exclude, pageSize: 8 }
   const res = useQuery({ queryKey: ['admin-people', query], queryFn: () => getAdminPeople(query), enabled: debounced.length >= 2 })
   const items = res.data?.items ?? []
   return (
     <div className="space-y-1">
-      <div className="relative">
-        
-        <Input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Фамилия…" className="h-10" aria-label="Поиск человека" autoFocus={autoFocus} />
-      </div>
+      <Input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Фамилия…" className="h-10" aria-label="Поиск человека" autoFocus={autoFocus} />
       {debounced.length >= 2 && (
         <ul className="max-h-56 overflow-y-auto border border-rule bg-white" role="listbox" aria-label="Найденные люди">
           {res.isFetching && !items.length && <li className="p-2 text-sm text-muted">Поиск…</li>}
@@ -65,7 +58,7 @@ export function NewPersonDialog({ open, displayName, defaultKind = 'staff', onCl
         fullName: form.fullName.trim(), kind: form.kind, aliases: displayName && displayName !== form.fullName ? [displayName] : [],
         ...(form.kind === 'external' ? { affiliation: form.affiliation || undefined } : { department: form.department || undefined }),
       })
-      qc.invalidateQueries({ queryKey: ['admin-people'] })
+      refreshAll(qc)
       onCreated(p)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Не удалось создать')

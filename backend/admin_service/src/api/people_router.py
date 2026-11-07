@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
 
-from admin_service.src.api.schemas import MatchRequest, MergeRequest
+from admin_service.src.api.schemas import ExternalRequest, MatchRequest, MergeRequest
 from admin_service.src.dependencies import Moderator, People, Q, Works
 from admin_service.src.dto import PersonIn
 from shared.auth.session import require_moderator
@@ -38,6 +38,12 @@ async def create_person(body: PersonIn, service: People, user: Moderator) -> dic
 @router.post("/people/match")
 async def match_author(body: MatchRequest, service: People, user: Moderator) -> dict:
     return await service.match(body.displayName, body.personId, body.kind, user)
+
+
+@router.post("/people/match-external")
+async def match_external(body: ExternalRequest, service: People, user: Moderator) -> dict:
+    """«Остальные — внешние авторы»: каждое написание — новый внешний автор, как кнопка «Внешний автор»."""
+    return await service.match_external(body.names, user)
 
 
 @router.get("/people/{person_id:uuid}")

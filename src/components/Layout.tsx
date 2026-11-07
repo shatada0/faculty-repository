@@ -6,7 +6,7 @@ import type { User } from '@/api/types'
 import { btn, Button, cn, EmptyState, Spinner } from './ui'
 
 const MockPanel = import.meta.env.VITE_USE_MOCKS === 'true' ? lazy(() => import('@/mocks/MockPanel')) : null
-const ORG = import.meta.env.VITE_FACULTY_NAME || 'Лаборатория интеллектуальных систем'
+const ORG = import.meta.env.VITE_FACULTY_NAME || 'Факультет информационных технологий'
 /** Grafana on stats.<domain>: open only from the university network, so it is just a link out. */
 const STATS_URL = import.meta.env.VITE_STATS_URL as string | undefined
 

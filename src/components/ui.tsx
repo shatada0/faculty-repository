@@ -1,5 +1,5 @@
 // Small kit on native elements (button, input, select, dialog). Square shapes, hairlines, no shadows.
-import { useEffect, useId, useRef, type ComponentProps, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from 'react'
 import { Link } from 'react-router'
 import { AlertTriangle, Info, Loader2, X } from 'lucide-react'
 import { twMerge } from 'tailwind-merge'
@@ -25,7 +25,8 @@ export const btn = (variant: keyof typeof variants = 'primary', size: keyof type
 
 export function Button({ variant, size, className, loading, children, ...p }: ComponentProps<'button'> & { variant?: keyof typeof variants; size?: keyof typeof sizes; loading?: boolean }) {
   return (
-    <button type="button" className={btn(variant, size, className)} disabled={loading || p.disabled} {...p}>
+    // disabled after the spread: a caller's disabled={false} must not make a loading button clickable twice
+    <button type="button" {...p} className={btn(variant, size, className)} disabled={loading || p.disabled}>
       {loading && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
       {children}
     </button>
@@ -91,7 +92,8 @@ export const SectionTitle = ({ children, action, as: H = 'h2', className }: { ch
 export function Tiles({ items, className }: { items: { value: ReactNode; label: ReactNode; note?: ReactNode; to?: string }[]; className?: string }) {
   const bg = (i: number) => (i === 0 ? 'bg-brand text-white' : i % 2 ? 'bg-panel' : 'bg-panel-2')
   return (
-    <div className={cn('grid grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]', className)}>
+    // one tile alone would stretch into a page-wide banner
+    <div className={cn('grid grid-cols-[repeat(auto-fit,minmax(min(100%,9rem),1fr))]', items.length === 1 && 'max-w-xs', className)}>
       {items.map((t, i) => (
         <div key={i} className={cn('flex flex-col gap-1 p-5 sm:p-6', bg(i))}>
           <span className="text-4xl font-bold leading-none sm:text-5xl">{t.value}</span>
@@ -204,6 +206,16 @@ export function Pagination({ page, total, pageSize, onChange }: { page: number; 
       {page < pages && <Button variant="link" onClick={() => onChange(page + 1)}>Следующая</Button>}
     </nav>
   )
+}
+
+/** The value once it has stopped changing for `ms`: a search goes out when typing pauses, not on every key. */
+export function useDebounced<T>(value: T, ms = 250): T {
+  const [v, setV] = useState(value)
+  useEffect(() => {
+    const t = setTimeout(() => setV(value), ms)
+    return () => clearTimeout(t)
+  }, [value, ms])
+  return v
 }
 
 export const Count = ({ n, forms }: { n: number; forms: [string, string, string] }) => <>{n} {plural(n, forms)}</>

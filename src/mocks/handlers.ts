@@ -394,6 +394,13 @@ export const handlers = [
     const p = match(displayName, personId, kind)
     return p ? HttpResponse.json(p) : notFound('Человек не найден')
   }, true),
+  post('/admin/people/match-external', async ({ request }) => {
+    const { names } = (await request.json()) as { names: string[] }
+    const open = new Set(unmatched().items.map((u) => u.displayName))
+    const done = [...new Set(names.map((n) => n.trim()))].filter((n) => open.has(n))
+    for (const n of done) match(n, null, 'external')
+    return HttpResponse.json({ done: done.length })
+  }, true),
   get('/admin/people/:id', ({ params }) => {
     const p = resolvePerson(params.id as string)
     return p ? HttpResponse.json(personCard(p)) : notFound('Человек не найден')

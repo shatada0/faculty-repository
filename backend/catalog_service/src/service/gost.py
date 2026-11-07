@@ -3,7 +3,7 @@
 from typing import Any
 
 from shared.people.names import initials_first, parse_name
-from shared.works.labels import LEVEL, format_date_range
+from shared.works.labels import LEVEL, format_date_range, imprint
 
 D = ". – "
 
@@ -13,10 +13,10 @@ def _heading(display: str) -> str:
     return f"{surname}, {' '.join(i + '.' for i in initials)}" if initials else surname
 
 
-def _authors_part(title: str, authors: list[dict], suffix: str = "") -> str:
-    """1–3 автора — заголовок; 4 — перечисляются; 5 и больше — первые три [и др.]."""
+def _authors_part(title: str, authors: list[dict], suffix: str = "", et_al: str = "[и др.]") -> str:
+    """1–3 автора — заголовок; 4 — перечисляются; 5 и больше — первые три [и др.] ([et al.] у английских)."""
     names = [initials_first(a["displayName"]) for a in authors]
-    resp = f"{', '.join(names[:3])} [и др.]" if len(authors) >= 5 else ", ".join(names)
+    resp = f"{', '.join(names[:3])} {et_al}" if len(authors) >= 5 else ", ".join(names)
     head = f"{_heading(authors[0]['displayName'])} " if 0 < len(authors) <= 3 else ""
     return f"{head}{title}{suffix}{f' / {resp}' if resp else ''}"
 
@@ -34,24 +34,26 @@ def _tail(s: str, w: dict[str, Any]) -> str:
 
 
 def _publication(w: dict[str, Any]) -> str:
+    t = imprint(w)
     if w["kind"] in ("monograph", "textbook"):
-        label = "монография" if w["kind"] == "monograph" else "учебное пособие"
-        s = _authors_part(w["title"], w["authors"], f" : {label}")
+        s = _authors_part(w["title"], w["authors"], f" : {t[w['kind']]}", t["et_al"])
         s += D + ", ".join(str(x) for x in (w.get("publisher"), w.get("year")) if x)
         if w.get("pages"):
-            s += D + f"{w['pages']} с."
+            s += D + f"{w['pages']} {t['book_pages']}"
         if w.get("isbn"):
             s += D + f"ISBN {w['isbn']}"
         return _tail(_end(s), w)
-    s = _authors_part(w["title"], w["authors"]) + f" // {w.get('venue') or ''}"
+    s = _authors_part(w["title"], w["authors"], et_al=t["et_al"]) + f" // {w.get('venue') or ''}"
     s += D + (
         f"{w['publisher']}, {w['year']}" if w.get("publisher") and w["kind"] != "journal_article" else str(w["year"])
     )
-    vol = ", ".join(x for x in (w.get("volume") and f"Т. {w['volume']}", w.get("issue") and f"№ {w['issue']}") if x)
+    vol = ", ".join(
+        x for x in (w.get("volume") and f"{t['vol']} {w['volume']}", w.get("issue") and f"{t['no']} {w['issue']}") if x
+    )
     if vol:
         s += D + vol
     if w.get("pages"):
-        s += D + f"С. {w['pages']}"
+        s += D + f"{t['pages']} {w['pages']}"
     return _tail(_end(s), w)
 
 

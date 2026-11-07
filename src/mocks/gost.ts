@@ -1,6 +1,6 @@
 // Bibliographic reference per ГОСТ Р 7.0.100–2018 (simplified to the fields we store).
 import type { AuthorRef, Publication, StudentWork, Talk, Work } from '@/api/types'
-import { formatDateRange } from './view'
+import { formatDateRange, imprint } from './view'
 import { initialsFirst, parseName } from './names'
 import { levelLabels } from '@/lib/labels'
 
@@ -12,9 +12,9 @@ function heading(a: AuthorRef): string {
 }
 
 /** Heading + statement of responsibility: 1–3 authors get a heading, 4 are listed, 5+ → first 3 [и др.]. */
-function authorsPart(title: string, authors: AuthorRef[], suffix = ''): string {
+function authorsPart(title: string, authors: AuthorRef[], suffix = '', etAl = '[и др.]'): string {
   const names = authors.map((a) => initialsFirst(a.displayName))
-  const resp = authors.length >= 5 ? `${names.slice(0, 3).join(', ')} [и др.]` : names.join(', ')
+  const resp = authors.length >= 5 ? `${names.slice(0, 3).join(', ')} ${etAl}` : names.join(', ')
   const head = authors.length > 0 && authors.length <= 3 ? `${heading(authors[0])} ` : ''
   return `${head}${title}${suffix}${resp ? ` / ${resp}` : ''}`
 }
@@ -22,21 +22,20 @@ function authorsPart(title: string, authors: AuthorRef[], suffix = ''): string {
 const end = (s: string) => (/[.!?]$/.test(s) ? s : s + '.')
 
 function publication(w: Publication): string {
-  const book = w.kind === 'monograph' || w.kind === 'textbook'
-  if (book) {
-    const label = w.kind === 'monograph' ? 'монография' : 'учебное пособие'
-    let s = authorsPart(w.title, w.authors, ` : ${label}`)
+  const t = imprint(w)
+  if (w.kind === 'monograph' || w.kind === 'textbook') {
+    let s = authorsPart(w.title, w.authors, ` : ${t[w.kind]}`, t.etAl)
     s += D + [w.publisher, w.year].filter(Boolean).join(', ')
-    if (w.pages) s += D + `${w.pages} с.`
+    if (w.pages) s += D + `${w.pages} ${t.bookPages}`
     if (w.isbn) s += D + `ISBN ${w.isbn}`
     return tail(end(s), w)
   }
-  let s = authorsPart(w.title, w.authors) + ` // ${w.venue}`
+  let s = authorsPart(w.title, w.authors, '', t.etAl) + ` // ${w.venue}`
   if (w.publisher && w.kind !== 'journal_article') s += D + `${w.publisher}, ${w.year}`
   else s += D + w.year
-  const vol = [w.volume && `Т. ${w.volume}`, w.issue && `№ ${w.issue}`].filter(Boolean).join(', ')
+  const vol = [w.volume && `${t.vol} ${w.volume}`, w.issue && `${t.no} ${w.issue}`].filter(Boolean).join(', ')
   if (vol) s += D + vol
-  if (w.pages) s += D + `С. ${w.pages}`
+  if (w.pages) s += D + `${t.pages} ${w.pages}`
   return tail(end(s), w)
 }
 

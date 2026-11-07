@@ -99,7 +99,7 @@ export default function Person() {
               <BarChart data={p.byYear} margin={{ left: -24, right: 0, top: 8 }} barCategoryGap="30%">
                 <XAxis dataKey="year" tick={{ fontSize: 13, fill: '#4d4d4d' }} tickLine={false} axisLine={{ stroke: '#1f3a5f' }} />
                 <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#666666' }} tickLine={false} axisLine={false} />
-                <Tooltip cursor={{ fill: '#eef2f7' }} contentStyle={{ borderRadius: 0, border: '1px solid #1f3a5f' }} />
+                <Tooltip cursor={{ fill: '#eef2f7' }} contentStyle={{ borderRadius: 0, border: '1px solid #1f3a5f' }} itemSorter={(i) => (i.dataKey === 'publication' ? 0 : 1)} />
                 <Bar dataKey="publication" name="Публикации" stackId="a" fill="#1f3a5f" cursor="pointer" isAnimationActive={false} onClick={(d: { payload?: { year: number } }) => d.payload && openYear(d.payload.year)} />
                 <Bar dataKey="talk" name="Выступления" stackId="a" fill="#d42a3d" cursor="pointer" isAnimationActive={false} onClick={(d: { payload?: { year: number } }) => d.payload && openYear(d.payload.year, 'talks')} />
               </BarChart>

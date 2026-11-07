@@ -38,8 +38,10 @@ def work_view(w: dict[str, Any], materials: list[dict]) -> dict[str, Any]:
     kind = L.work_kind(w["type"], w.get("kind"))
     if w["type"] == "publication":
         book = w["kind"] in ("monograph", "textbook")
-        pages = w.get("pages") and (f"{w['pages']} с." if book else f"С. {w['pages']}")
-        imprint = _join([w.get("volume") and f"Т. {w['volume']}", w.get("issue") and f"№ {w['issue']}", pages], ", ")
+        t = L.imprint(w)
+        pages = w.get("pages") and (f"{w['pages']} {t['book_pages']}" if book else f"{t['pages']} {w['pages']}")
+        volume = w.get("volume") and f"{t['vol']} {w['volume']}"
+        imprint = _join([volume, w.get("issue") and f"{t['no']} {w['issue']}", pages], ", ")
         indexing = ", ".join(L.INDEXING[i] for i in w.get("indexing") or [])
         byline = [{"people": _links(w["authors"])}]
         where = _join([w.get("venue") or w.get("publisher"), w.get("year"), imprint], ". ")

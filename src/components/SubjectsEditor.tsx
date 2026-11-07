@@ -1,20 +1,16 @@
 // Rubrics of a work: chosen ones as chips, new ones picked from the server's classifier (ГРНТИ, ОЕСР, WoS, ASJC).
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { searchClassifier } from '@/api'
 import type { Subject, SubjectScheme } from '@/api/types'
 import { subjectSchemeLabels } from '@/lib/labels'
-import { Input } from './ui'
+import { Input, useDebounced } from './ui'
 
 function SchemeRow({ scheme, value, onChange }: { scheme: SubjectScheme; value: Subject[]; onChange: (v: Subject[]) => void }) {
   const [q, setQ] = useState('')
-  const [debounced, setDebounced] = useState('')
+  const debounced = useDebounced(q.trim())
   const [open, setOpen] = useState(false)
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(q.trim()), 250)
-    return () => clearTimeout(t)
-  }, [q])
   const res = useQuery({ queryKey: ['admin-classifier', scheme, debounced], queryFn: () => searchClassifier(scheme, debounced), enabled: open, staleTime: 5 * 60_000 })
   const mine = value.filter((s) => s.scheme === scheme)
   const found = (res.data ?? []).filter((s) => !mine.some((x) => x.code === s.code))

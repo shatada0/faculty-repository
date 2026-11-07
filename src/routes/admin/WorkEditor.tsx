@@ -4,7 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-quer
 import { Controller, FormProvider, useForm, useFormContext, type FieldErrors } from 'react-hook-form'
 import {
   ApiError, createWork, fillFromDoi, fillFromIsbn, getAdminMaterialLink, getAdminWork, getAdminWorkFile, getEvents, getNextInQueue, getRelatedOptions,
-  getUploadLimits, getWorkTemplate, patchWork, publishWork, rejectWork, reviewMaterial, unpublishWork, uploadWorkFile,
+  getUploadLimits, getWorkTemplate, patchWork, publishWork, refreshAll, rejectWork, reviewMaterial, unpublishWork, uploadWorkFile,
 } from '@/api'
 import type { AdminWork, AuthorRef, DoiConflict, FieldMeta, MaterialStatus, SubjectScheme, TalkEvent, WorkType } from '@/api/types'
 import { AuthorsEditor } from '@/components/AuthorsEditor'
@@ -12,7 +12,7 @@ import { FileDrop } from '@/components/FileDrop'
 import { NotFound, useTitle } from '@/components/Layout'
 import { SubjectsEditor } from '@/components/SubjectsEditor'
 import { FieldSourceBadge, MaterialStatusBadge, StatusBadge, TypeIcon } from '@/components/WorkCard'
-import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Tabs, Textarea, cn } from '@/components/ui'
+import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Tabs, Textarea, cn, useDebounced } from '@/components/ui'
 import { formatSize } from '@/lib/format'
 import {
   accessLabels, confLevelLabels, courseworkKindLabels, fieldLabels, formatLabels, indexingLabels, languageLabels, levelLabels, materialKindLabels,
@@ -165,7 +165,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
     qc.setQueryData(['admin-work', saved.id], saved)
     // publish, materials and file bump updatedAt too: without it the next save of the open form would be refused as stale
     resetField('updatedAt', { defaultValue: saved.updatedAt })
-    qc.invalidateQueries({ predicate: (x) => ['admin-works', 'admin-unmatched', 'admin-people', 'works', 'facets', 'stats', 'person', 'personWorks', 'work', 'staff'].includes(String(x.queryKey[0])) })
+    refreshAll(qc)
   }
 
   async function run<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
@@ -261,8 +261,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
 
   // ---- conference autocomplete ----
   const eventName: string = watch('event.name') ?? ''
-  const [eventQ, setEventQ] = useState('')
-  useEffect(() => { const t = setTimeout(() => setEventQ(eventName), 250); return () => clearTimeout(t) }, [eventName])
+  const eventQ = useDebounced(eventName)
   const events = useQuery({ queryKey: ['admin-events', eventQ], queryFn: () => getEvents(eventQ), enabled: type === 'talk' && eventQ.length >= 3 })
   const pickEvent = (name: string) => {
     const ev = events.data?.find((e: TalkEvent) => e.name === name)
@@ -287,6 +286,15 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
 
   const formEl = (
     <div className="space-y-6">
+      {/* DOI first: one click fills the rest of a publication */}
+      {type === 'publication' && (
+        <F name="doi" label="DOI" hint={import.meta.env.VITE_USE_MOCKS === 'true' ? 'Для демо: 10.12345/kim.2026.0142, 10.12345/jads.2025.118, 10.12345/pi.2026.07' : 'Введите DOI — название, авторов, журнал и год заполнит Crossref'}>{(id, d) => (
+          <div className="flex gap-2">
+            <Input id={id} aria-describedby={d} placeholder="10.xxxx/..." {...register('doi')} aria-invalid={!!errors.doi} />
+            <Button variant="outline" onClick={() => onLookup('doi')} loading={busy === 'doi'}>Заполнить по DOI</Button>
+          </div>
+        )}</F>
+      )}
       <section className="space-y-4">
         <F name="title" label="Название">{(id, d) => <Textarea id={id} aria-describedby={d} rows={3} {...register('title')} aria-invalid={!!errors.title} />}</F>
         <F name="authors" label="Авторы (порядок как в работе)">{() => (
@@ -325,12 +333,6 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
 
       {type === 'publication' && (
         <section className="grid gap-4 sm:grid-cols-2">
-          <F name="doi" label="DOI" className="sm:col-span-2" hint={import.meta.env.VITE_USE_MOCKS === 'true' ? 'Для демо: 10.12345/kim.2026.0142, 10.12345/jads.2025.118, 10.12345/pi.2026.07' : undefined}>{(id, d) => (
-            <div className="flex gap-2">
-              <Input id={id} aria-describedby={d} placeholder="10.xxxx/..." {...register('doi')} aria-invalid={!!errors.doi} />
-              <Button variant="outline" onClick={() => onLookup('doi')} loading={busy === 'doi'}>Заполнить по DOI</Button>
-            </div>
-          )}</F>
           <F name="kind" label="Вид публикации">{(id) => (
             <Select id={id} {...register('kind')}>{Object.entries(pubKindLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select>
           )}</F>
@@ -486,10 +488,10 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
           <div className={cn(hasFile && 'xl:grid xl:grid-cols-2 xl:gap-10')}>
             {hasFile && <div className={cn('xl:sticky xl:top-20 xl:block xl:self-start', pane === 'file' ? 'block' : 'hidden')}><PdfPane id={work!.id} /></div>}
             <Card className={cn(hasFile && pane === 'file' && 'hidden xl:block')}>
-              {formEl}
+              {/* first: «Материалы от авторов» on the dashboard leads here */}
               {work && work.materials.length > 0 && (
-                <section className="mt-6 space-y-1 border-t border-rule pt-4">
-                  <h2 className="font-bold">Материалы</h2>
+                <section className="mb-6 space-y-1 border-b border-rule pb-4">
+                  <h2 className="font-bold">Материалы от авторов</h2>
                   <ul className="divide-y divide-rule">
                     {work.materials.map((m) => (
                       <li key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
@@ -497,7 +499,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
                           onClick={() => openSigned(() => getAdminMaterialLink(work.id, m.id)).catch((e) => setMessage({ tone: 'red', text: e.message }))}>
                           {materialKindLabels[m.kind]}: {m.name}
                         </button>
-                        <span className="text-muted">{formatSize(m.size)} · {m.uploadedBy}</span>
+                        <span className="text-muted">{[formatSize(m.size), m.uploadedBy].filter(Boolean).join(' · ')}</span>
                         <MaterialStatusBadge status={m.status} />
                         <span className="ml-auto flex gap-4">
                           {m.status !== 'approved' && <Button variant="link" size="sm" onClick={() => onMaterial(m.id, 'approved')} loading={busy === 'material'}>Принять</Button>}
@@ -508,6 +510,7 @@ function Editor({ work, initial }: { work?: AdminWork; initial: AdminWork }) {
                   </ul>
                 </section>
               )}
+              {formEl}
               {!hasFile && (
                 <div className="mt-6 border-t border-rule pt-4">
                   {work

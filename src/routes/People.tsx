@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { departmentWorksDocxUrl, getDepartments, getStaff } from '@/api'
-import { EmptyState, ErrorState, Input, Select, Skeleton } from '@/components/ui'
+import { EmptyState, ErrorState, Input, Select, Skeleton, useDebounced } from '@/components/ui'
 import { plural } from '@/lib/format'
 import { useTitle } from '@/components/Layout'
 
@@ -18,11 +18,8 @@ export default function People() {
   const departments = useDepartments().data?.items ?? []
   useTitle('Преподаватели')
   const [text, setText] = useState(q)
-  useEffect(() => {
-    if (text.trim() === q) return
-    const t = setTimeout(() => set('q', text.trim()), 300)
-    return () => clearTimeout(t)
-  }, [text])
+  const typed = useDebounced(text.trim(), 300)
+  useEffect(() => { if (typed !== q) set('q', typed) }, [typed])
   const res = useQuery({ queryKey: ['staff', { q, department, sort }], queryFn: () => getStaff({ q, department, sort }), placeholderData: keepPreviousData })
 
   return (

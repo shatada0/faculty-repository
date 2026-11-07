@@ -60,6 +60,18 @@ def test_gost_journal_article() -> None:
     )
 
 
+def test_gost_english_article_uses_latin_abbreviations() -> None:
+    authors = [
+        {"displayName": n} for n in ("Britvina V.", "Mukhanov S. A.", "Bobrova E.", "Gavrilyuk A.", "Nurgazina G.")
+    ]
+    w = PUB | {"kind": "journal_article", "language": "en", "title": "Digital twins", "venue": "E3S Web of Conferences"}
+    got = gost_citation(w | {"volume": "431", "issue": "2", "pages": "05033", "authors": authors})
+    assert got == (
+        "Digital twins / V. Britvina, S. A. Mukhanov, E. Bobrova [et al.] // E3S Web of Conferences. – 2024. "
+        "– Vol. 431, No. 2. – P. 05033."
+    )
+
+
 def test_gost_five_authors() -> None:
     authors = [{"displayName": n} for n in ("А. А. Аа", "Б. Б. Бб", "В. В. Вв", "Г. Г. Гг", "Д. Д. Дд")]
     assert gost_citation(PUB | {"kind": "journal_article", "title": "T", "venue": "J", "authors": authors}).startswith(
@@ -154,6 +166,9 @@ async def test_home_and_people(demo: dict) -> None:
     assert 0 < h <= cites
     one = await c.metrics(orlov, str(metrics["years"][0]))
     assert int(one["items"][1]["value"]) <= cites
+    page_of_orlov = await c.profile(orlov)  # курсовыми он не руководит: ни вкладки, ни плитки «0»
+    assert all(t["count"] for t in page_of_orlov["tabs"]) and all(t["value"] for t in page_of_orlov["tiles"])
+    assert "coursework" not in [t["key"] for t in page_of_orlov["tabs"]]
     graduate = next(p for p in demo["data"]["people"] if p["kind"] == "graduate")
     profile = await c.profile(demo["ids"][graduate["id"]])
     assert profile["tabs"][0]["query"] == {"type": "vkr", "role": "author"} and "Выпускник" in profile["headline"]

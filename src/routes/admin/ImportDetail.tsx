@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, getImport, retryImport } from '@/api'
+import { ApiError, getImport, refreshAll, retryImport } from '@/api'
 import type { ImportItemStatus } from '@/api/types'
 import { NotFound, useTitle } from '@/components/Layout'
 import { Alert, Badge, Button, Card, ErrorState, Select, Spinner, Tiles, btn, type Tone } from '@/components/ui'
@@ -31,7 +31,7 @@ export default function ImportDetail() {
   const done = q.data?.import.status === 'done'
   useTitle(q.data && `Импорт ${q.data.import.fileName}`)
   useEffect(() => {
-    if (done) qc.invalidateQueries({ predicate: (x) => ['admin-works', 'admin-unmatched', 'admin-imports'].includes(String(x.queryKey[0])) })
+    if (done) refreshAll(qc)
   }, [done, qc])
 
   if (q.isError) return q.error instanceof ApiError && q.error.status === 404 ? <NotFound text="Импорт не найден" /> : <ErrorState error={q.error} onRetry={() => q.refetch()} />
@@ -48,7 +48,7 @@ export default function ImportDetail() {
           <ImportStatusBadge status={imp.status} errors={imp.stats.errors} />
         </div>
         <p className="text-sm text-ink-2">
-          {workTypePlural[imp.workType]} · {{ archive: 'архив', table: 'таблица', text: 'список текстом' }[imp.kind]}
+          {imp.kind === 'archive' ? 'ВКР и курсовые' : `${workTypePlural[imp.workType]} · ${imp.kind === 'table' ? 'таблица' : 'список текстом'}`}
           {imp.metaTableName && <> · таблица сведений: {imp.metaTableName}</>} · {imp.createdBy}, {formatDateTime(imp.createdAt)}
         </p>
       </header>

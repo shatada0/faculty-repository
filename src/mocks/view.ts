@@ -11,6 +11,11 @@ const dayMonth = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long' }
 const full = new Intl.DateTimeFormat('ru', { day: 'numeric', month: 'long', year: 'numeric' })
 
 /** "12–14 мая 2024 г.", "30 мая – 2 июня 2024 г." */
+/** Abbreviations in the language of the work (ГОСТ Р 7.0.100–2018): an English article gets Vol., No., P. and [et al.]. */
+export const imprint = (w: { language: string }) => (w.language === 'en'
+  ? { vol: 'Vol.', no: 'No.', pages: 'P.', bookPages: 'p.', etAl: '[et al.]', monograph: 'monograph', textbook: 'textbook' }
+  : { vol: 'Т.', no: '№', pages: 'С.', bookPages: 'с.', etAl: '[и др.]', monograph: 'монография', textbook: 'учебное пособие' })
+
 export function formatDateRange(start: string, end?: string): string {
   const a = toDate(start)
   if (!end || end === start) return full.format(a)
@@ -37,18 +42,19 @@ export function workView(w: Work, materials: Material[] = []): WorkView {
   let details: DetailRow[]
   if (w.type === 'publication') {
     const book = w.kind === 'monograph' || w.kind === 'textbook'
-    const imprint = [w.volume && `Т. ${w.volume}`, w.issue && `№ ${w.issue}`, w.pages && (book ? `${w.pages} с.` : `С. ${w.pages}`)].filter(Boolean).join(', ')
+    const t = imprint(w)
+    const imprintText = [w.volume && `${t.vol} ${w.volume}`, w.issue && `${t.no} ${w.issue}`, w.pages && (book ? `${w.pages} ${t.bookPages}` : `${t.pages} ${w.pages}`)].filter(Boolean).join(', ')
     const indexing = w.indexing.map((i) => indexingLabels[i]).join(', ')
     kind = pubKindLabels[w.kind]
     byline = [{ people: links(w.authors) }]
-    where = [w.venue || w.publisher, w.year, imprint].filter(Boolean).join('. ')
+    where = [w.venue || w.publisher, w.year, imprintText].filter(Boolean).join('. ')
     const lists = (w.journalLists ?? []).join(', ')
     if (indexing) meta.push({ text: indexing, tone: 'info' })
     if (lists) meta.push({ text: lists })
     if (w.citations) meta.push({ text: `цитирований: ${w.citations}` })
     if (w.doi) meta.push({ text: `DOI ${w.doi}`, href: doiUrl(w.doi) })
     details = [
-      ...row('Вид', kind), ...row(w.kind === 'journal_article' ? 'Журнал' : 'Издание', w.venue), ...row('Выходные данные', imprint),
+      ...row('Вид', kind), ...row(w.kind === 'journal_article' ? 'Журнал' : 'Издание', w.venue), ...row('Выходные данные', imprintText),
       ...row('Издательство', w.publisher), ...row('DOI', w.doi, { href: w.doi && doiUrl(w.doi) }), ...row('ISSN', w.issn), ...row('ISBN', w.isbn),
       ...row('Индексация', indexing, { tone: 'info' }), ...row('Журнал в списках', lists), ...row('Цитирований', w.citations),
     ]

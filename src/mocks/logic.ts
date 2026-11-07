@@ -131,7 +131,8 @@ export function profile(p: MockPerson): PersonProfile {
     { key: 'indexing', label: 'Индексация', all: 'любая', options: options(indexingLabels) },
   ]
   const talkFilters = [{ key: 'talkKind', label: 'Вид доклада', all: 'все', options: options(talkKindLabels) }]
-  const tabs = staff
+  // a tab or a tile with zero is noise
+  const tabs = (staff
     ? [
       tab('publications', 'Публикации', 'publication', 'author', pubFilters), tab('talks', 'Выступления', 'talk', 'author', talkFilters),
       tab('vkr', 'Руководство ВКР', 'vkr', 'supervisor'), tab('coursework', 'Руководство курсовыми', 'coursework', 'supervisor'),
@@ -139,7 +140,7 @@ export function profile(p: MockPerson): PersonProfile {
     : [
       tab('vkr', 'ВКР', 'vkr', 'author'), tab('coursework', 'Курсовые', 'coursework', 'author'),
       tab('publications', 'Публикации', 'publication', 'author', pubFilters), tab('talks', 'Выступления', 'talk', 'author', talkFilters),
-    ].filter((t) => t.count > 0)
+    ]).filter((t) => t.count > 0)
   const mine = works.filter((w) => (w.type === 'publication' || w.type === 'talk') && asAuthor(w, p.id))
   const byIndexing = { scopus: 0, wos: 0, vak: 0, rinc: 0, core_rinc: 0 } as Record<Indexing, number>
   const byConfLevel = { international: 0, national: 0, regional: 0, university: 0 } as Record<ConferenceLevel, number>
@@ -168,7 +169,7 @@ export function profile(p: MockPerson): PersonProfile {
       { value: c.talk, label: plural(c.talk, FORMS.talk), note: breakdown(byConfLevel, confLevelLabels) },
       { value: c.vkr, label: 'ВКР под руководством' },
       { value: c.coursework, label: `${plural(c.coursework, FORMS.coursework)} под руководством` },
-    ]
+    ].filter((t) => t.value > 0)
     : tabs.map((t) => ({ value: t.count, label: plural(t.count, FORMS[t.query.type as WorkType]) }))
   const headline = staff ? p.position : [personKindLabels[p.kind], p.department].filter(Boolean).join(' · ')
   return { ...p, aliases: undefined, headline, tiles, tabs, byYear, coauthors }

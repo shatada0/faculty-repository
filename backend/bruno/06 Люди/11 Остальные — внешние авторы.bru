@@ -1,0 +1,27 @@
+meta {
+  name: Остальные — внешние авторы
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{baseUrl}}/api/admin/people/match-external
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "names": ["Неизвестнов-Бруно Х. Х.", "Нет-Такого-Бруно А."]
+  }
+}
+
+assert {
+  res.status: eq 200
+}
+
+tests {
+  test("уже привязанное и незнакомое написание пропускаются, никто не заводится", function () {
+    expect(res.body.done).to.equal(0);
+  });
+}

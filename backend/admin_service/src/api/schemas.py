@@ -1,6 +1,6 @@
 """Тела запросов рабочего места и кабинета автора."""
 
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -39,6 +39,10 @@ class MatchRequest(BaseModel):
     displayName: str = Field(max_length=300)
     personId: UUID | None = None
     kind: Literal["staff", "student", "graduate", "external"] = "external"
+
+
+class ExternalRequest(BaseModel):
+    names: list[Annotated[str, Field(max_length=300)]] = Field(max_length=2000)
 
 
 class MergeRequest(BaseModel):

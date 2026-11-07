@@ -116,6 +116,7 @@ function WorkRow({ w, onOpen }: { w: MyWork; onOpen: () => void }) {
       <div className="min-w-0 flex-[1_1_20rem]">
         <p className="text-sm text-ink-2">{w.kind}</p>
         <p className="font-bold leading-snug">{w.public ? <Link to={`/works/${w.id}`}>{w.title}</Link> : w.title}</p>
+        {!w.public && <p className="text-sm text-muted">Ещё не опубликована в каталоге</p>}
         {counts.length > 0 && (
           <p className="text-sm">{counts.map((c, i) => <span key={c.status} className={c.tone}>{i > 0 && ' · '}{c.label}: {c.n}</span>)}</p>
         )}

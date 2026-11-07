@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query'
-import { bulkWorks, exportWorks, getAdminWorks, getImports, worksZipUrl } from '@/api'
+import { bulkWorks, exportWorks, getAdminWorks, getImports, refreshAll, worksZipUrl } from '@/api'
 import type { AccessLevel, WorkStatus, WorkType } from '@/api/types'
 import { StatusBadge, TypeIcon } from '@/components/WorkCard'
-import { Alert, Button, Card, EmptyState, ErrorState, Input, Pagination, Select, Spinner, btn, cn } from '@/components/ui'
+import { Alert, Button, Card, EmptyState, ErrorState, Input, Pagination, Select, Spinner, btn, cn, useDebounced } from '@/components/ui'
 import { formatDateTime } from '@/lib/format'
 import { accessLabels, statusLabels, workTypePlural } from '@/lib/labels'
 import { importOption } from './Imports'
@@ -24,11 +24,8 @@ export default function Works() {
   useTitle('Все работы')
 
   const [text, setText] = useState(query.q)
-  useEffect(() => {
-    if (text.trim() === query.q) return
-    const t = setTimeout(() => set('q', text.trim()), 300)
-    return () => clearTimeout(t)
-  }, [text])
+  const typed = useDebounced(text.trim(), 300)
+  useEffect(() => { if (typed !== query.q) set('q', typed) }, [typed])
 
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [access, setAccess] = useState<AccessLevel>('card_only')
@@ -53,7 +50,7 @@ export default function Works() {
     } finally {
       setBusy(false)
     }
-    qc.invalidateQueries({ predicate: (x) => ['admin-works', 'works', 'facets', 'stats', 'person', 'personWorks', 'work', 'staff'].includes(String(x.queryKey[0])) })
+    refreshAll(qc)
   }
 
   return (
@@ -67,7 +64,7 @@ export default function Works() {
       </div>
 
       <div className="flex flex-wrap gap-2">
-        <Input type="search" aria-label="Поиск" placeholder="Поиск по названию, автору, файлу" value={text} onChange={(e) => setText(e.target.value)} className="w-full sm:w-72" />
+        <Input type="search" aria-label="Поиск" placeholder="Название, автор или файл" value={text} onChange={(e) => setText(e.target.value)} className="w-full sm:w-72" />
         <Select aria-label="Тип" value={query.type} onChange={(e) => set('type', e.target.value)} className="w-auto">
           <option value="">Все типы</option>
           {(['vkr', 'coursework', 'publication', 'talk'] as WorkType[]).map((t) => <option key={t} value={t}>{workTypePlural[t]}</option>)}

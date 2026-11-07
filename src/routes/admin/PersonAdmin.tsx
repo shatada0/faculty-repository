@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ApiError, getAdminPerson, importOrcid, mergePerson, patchPerson } from '@/api'
+import { ApiError, getAdminPerson, importOrcid, mergePerson, patchPerson, refreshAll } from '@/api'
 import type { AdminPersonCard, OrcidImport, Person, PersonKind, PersonPatch } from '@/api/types'
 import { PersonPicker } from '@/components/AuthorsEditor'
 import { NotFound, useTitle } from '@/components/Layout'
@@ -9,7 +9,6 @@ import { StatusBadge, TypeIcon } from '@/components/WorkCard'
 import { Alert, Button, Card, Dialog, ErrorState, Field, Input, Select, Spinner, Textarea } from '@/components/ui'
 import { personKindLabels } from '@/lib/labels'
 import { useDepartments } from '@/routes/People'
-import { invalidatePeople } from './People'
 
 function OrcidImportCard({ person }: { person: AdminPersonCard }) {
   const qc = useQueryClient()
@@ -21,7 +20,7 @@ function OrcidImportCard({ person }: { person: AdminPersonCard }) {
     setError(undefined)
     try {
       setResult(await importOrcid(person.id))
-      await invalidatePeople(qc)
+      await refreshAll(qc)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Ошибка импорта')
     } finally {
@@ -65,7 +64,7 @@ function PersonForm({ person }: { person: AdminPersonCard }) {
       }
       const saved = await patchPerson(person.id, body)
       qc.setQueryData(['admin-person', person.id], saved)
-      await invalidatePeople(qc)
+      await refreshAll(qc)
       setMsg({ ok: true, text: 'Сохранено' })
     } catch (err) {
       setMsg({ ok: false, text: err instanceof Error ? err.message : 'Ошибка' })
@@ -130,7 +129,7 @@ export default function PersonAdmin() {
     try {
       const merged = await mergePerson(p.id, dup.id)
       qc.setQueryData(['admin-person', p.id], merged)
-      await invalidatePeople(qc)
+      await refreshAll(qc)
       setDup(null)
       setPicking(false)
     } catch (e) {

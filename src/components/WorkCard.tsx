@@ -7,7 +7,7 @@ import { Badge, cn, type Tone } from './ui'
 
 export const TypeIcon = ({ type, className = 'h-4 w-4' }: { type: WorkType; className?: string }) => {
   const I = { vkr: GraduationCap, coursework: BookOpen, publication: FileText, talk: Mic }[type]
-  return <I className={className} aria-hidden />
+  return <I className={cn('shrink-0', className)} aria-hidden />
 }
 
 /** People of a work; the server gives `profileId` to those who have a public profile. */
@@ -44,9 +44,9 @@ export const FieldSourceBadge = ({ source, confidence, low }: { source: FieldSou
   return <span className={cn('text-sm italic', low ? 'text-warn' : 'text-muted')}>{text}</span>
 }
 
-/** A title with the words that matched the search in bold. */
+/** A title with the words that matched the search highlighted (titles in lists are bold already, so bold alone is not seen). */
 export const marked = (parts: TitlePart[]) =>
-  parts.map((p, i) => (p.hit ? <mark key={i} className="bg-transparent font-bold text-ink">{p.text}</mark> : p.text))
+  parts.map((p, i) => (p.hit ? <mark key={i} className="bg-warn-bg font-bold text-ink">{p.text}</mark> : p.text))
 
 /** A work as a bibliographic list entry, as the server describes it. `lead` is an optional left column (number or date). */
 export function WorkCard({ work: w, lead, narrowLead, className }: { work: PublicWork; lead?: ReactNode; narrowLead?: boolean; className?: string }) {

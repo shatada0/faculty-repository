@@ -1,10 +1,10 @@
 // Search input with suggestions: ARIA combobox + listbox. The server ranks and marks matches; this only shows them.
-import { useEffect, useId, useState, type ComponentProps, type ReactNode } from 'react'
+import { useId, useState, type ComponentProps, type ReactNode } from 'react'
 import { useNavigate } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { getSuggestions } from '@/api'
 import { workTypeLabels } from '@/lib/labels'
-import { Input, cn } from './ui'
+import { Input, cn, useDebounced } from './ui'
 import { marked } from './WorkCard'
 
 type Option = { id: string; to: string; label: ReactNode; note: string }
@@ -18,11 +18,7 @@ export function SearchBox({ value, onChange, className, inputClassName, ...input
   const listId = useId()
   const [open, setOpen] = useState(false)
   const [active, setActive] = useState(-1)
-  const [debounced, setDebounced] = useState(value.trim())
-  useEffect(() => {
-    const t = setTimeout(() => setDebounced(value.trim()), 180)
-    return () => clearTimeout(t)
-  }, [value])
+  const debounced = useDebounced(value.trim(), 180)
   const res = useQuery({
     queryKey: ['suggest', debounced],
     queryFn: () => getSuggestions(debounced),

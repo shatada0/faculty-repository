@@ -48,6 +48,11 @@ def test_names_read_every_common_spelling() -> None:
     assert short_name("Белова Наталья Викторовна") == "Белова Н. В."
     assert short_key("Иванов И.И.") == short_key("I. Ivanov")
     assert short_key("Захаров И.") == short_key("Zakharov I.")
+    # реальные написания из Crossref: Ph вместо F, -sky вместо -ский, Sch вместо Щ
+    assert short_key("Филиппович Андрей Юрьевич") == short_key("Philippovich A.")
+    assert short_key("Архангельский Александр Игоревич") == short_key("Arkhangelsky A. I.")
+    assert short_key("Щербаков Олег") == short_key("Scherbakov O.")
+    assert short_key("Иванов И.") != short_key("Ivanova I.")
     assert name_query("Иванов И. И.") == "иванов:* & и:* & и:*"
     assert name_query("' | ! :*") is None  # синтаксис tsquery не сломать
 
@@ -66,7 +71,7 @@ def test_labels_with_endings() -> None:
     ]
     assert L.format_date_range("2024-05-12", "2024-05-14") == "12–14 мая 2024 г."
     assert L.format_date_range("2024-05-30", "2024-06-02") == "30 мая – 2 июня 2024 г."
-    assert L.format_size(2_400_000) == "2.3 МБ"
+    assert L.format_size(2_400_000) == "2,3 МБ" and L.format_size(500 * 1024**2) == "500 МБ"  # как formatSize во фронте
 
 
 def test_csv_delimiter_quotes_bom_crlf() -> None:

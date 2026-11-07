@@ -548,15 +548,12 @@ def _profile_parts(p: Person, works: list[Work], coauthors: dict[UUID, Person]) 
         ]
     else:
         tabs = [
-            t
-            for t in (
-                tab("vkr", "ВКР", "vkr", "author"),
-                tab("coursework", "Курсовые", "coursework", "author"),
-                tab("publications", "Публикации", "publication", "author", pub_filters),
-                tab("talks", "Выступления", "talk", "author", talk_filters),
-            )
-            if t["count"] > 0
+            tab("vkr", "ВКР", "vkr", "author"),
+            tab("coursework", "Курсовые", "coursework", "author"),
+            tab("publications", "Публикации", "publication", "author", pub_filters),
+            tab("talks", "Выступления", "talk", "author", talk_filters),
         ]
+    tabs = [t for t in tabs if t["count"] > 0]  # вкладка и плитка с нулём — шум
 
     mine = [w for w in works if w.type in ("publication", "talk") and _involved(w, p.id, "author")]
     by_indexing: Counter = Counter()
@@ -597,6 +594,7 @@ def _profile_parts(p: Person, works: list[Work], coauthors: dict[UUID, Person]) 
             {"value": c["vkr"], "label": "ВКР под руководством"},
             {"value": c["coursework"], "label": f"{L.plural(c['coursework'], L.FORMS['coursework'])} под руководством"},
         ]
+        tiles = [t for t in tiles if t["value"]]
         headline = p.position
     else:
         tiles = [{"value": t["count"], "label": L.plural(t["count"], L.FORMS[t["query"]["type"]])} for t in tabs]

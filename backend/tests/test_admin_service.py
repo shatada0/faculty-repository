@@ -157,6 +157,20 @@ async def test_people_match_and_merge(demo: dict) -> None:
     assert (await catalog().profile(uuid.UUID(dup["id"])))["id"] == str(main)  # старый id отдаёт основной профиль
 
 
+async def test_rest_become_external_authors(demo: dict) -> None:
+    p = PeopleService(uow_write_factory, PersonRepository(), WorkRepository())
+    before = (await p.unmatched(demo["user"]))["items"]
+    rest = [u["displayName"] for u in before if not u["suggestions"]]
+    assert rest
+    # «Нет такого» никто не видел в списке — его нет и в работах: пропускается, а не заводится
+    assert await p.match_external([*rest, rest[0], "Нет Такого А."], demo["user"]) == {"done": len(rest)}
+    after = (await p.unmatched(demo["user"]))["items"]
+    assert {u["displayName"] for u in after} == {u["displayName"] for u in before if u["suggestions"]}
+    async with uow_write_factory() as uow:
+        kinds = set(await uow.session.scalars(select(Person.kind).where(Person.full_name.in_(rest))))
+    assert kinds == {"external"}
+
+
 async def test_writer_role_reads_materials(demo: dict) -> None:
     """admin_service ходит в базу ролью writer: из users ей выдана только часть колонок."""
     async with uow_write_factory() as uow:
@@ -437,12 +451,14 @@ def test_crossref_mapping_orcid_article_number_language() -> None:
             "is-referenced-by-count": 744,
             "author": [
                 {"given": "Ivan", "family": "Oseledets", "ORCID": "https://orcid.org/0000-0003-2071-2163"},
+                {"name": "Moscow Polytechnic University, Moscow, Russia"},  # организация, не автор
                 {"given": "Gleb", "family": "Mezentsev"},
+                {"given": "Irina O.", "family": "CHEREPANOVA"},
             ],
         }
     )
-    assert got["authors"] == ["Oseledets I.", "Mezentsev G."]
-    assert got["author_orcids"] == ["0000-0003-2071-2163", None]
+    assert got["authors"] == ["Oseledets I.", "Mezentsev G.", "Cherepanova I. O."]
+    assert got["author_orcids"] == ["0000-0003-2071-2163", None, None]
     assert got["pages"] == "165116"  # у Physical Review вместо страниц — номер статьи
     assert got["language"] == "en"  # Crossref язык не дал: по названию, а не шаблонное «ru»
     assert got["citations"] == 744

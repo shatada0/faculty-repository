@@ -1,4 +1,5 @@
 // Endpoint functions — one per row of section 7.
+import type { QueryClient } from '@tanstack/react-query'
 import { api, download, qs, upload, type Query } from './client'
 import type {
   AccessLevel, AdminPersonCard, AdminPersonListItem, AdminSummary, AdminWork, Department, DoiConflict, Facets, FileLink, Import, ImportItem,
@@ -7,6 +8,10 @@ import type {
 } from './types'
 
 export { ApiError, reportError } from './client'
+
+/** After a moderator's change the server may recount anything (cards, counters, profiles, queues): mark it all stale.
+ *  Signed file links stay, or the PDF next to the editor would reload on every save. */
+export const refreshAll = (qc: QueryClient) => qc.invalidateQueries({ predicate: (q) => q.queryKey[0] !== 'admin-work-file' })
 
 // public
 export const getStats = () => api<Stats>('/stats')
@@ -109,5 +114,7 @@ export const getAdminPerson = (id: string) => api<AdminPersonCard>(`/admin/peopl
 export const patchPerson = (id: string, p: PersonPatch) => api<AdminPersonCard>(`/admin/people/${id}`, { method: 'PATCH', json: p })
 export const importOrcid = (id: string) => api<OrcidImport>(`/admin/people/${id}/orcid-import`, { method: 'POST' })
 export const mergePerson = (id: string, fromId: string) => api<AdminPersonCard>(`/admin/people/${id}/merge`, { method: 'POST', json: { fromId } })
+/** «Остальные — внешние авторы»: each name becomes a new external author; names linked meanwhile are skipped. */
+export const matchExternal = (names: string[]) => api<{ done: number }>('/admin/people/match-external', { method: 'POST', json: { names } })
 export const matchAuthor = (displayName: string, personId: string | null, kind: Person['kind']) =>
   api<Person>('/admin/people/match', { method: 'POST', json: { displayName, personId, kind } })

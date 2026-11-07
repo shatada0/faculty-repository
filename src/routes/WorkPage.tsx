@@ -10,9 +10,10 @@ import { Alert, Button, ErrorState, SectionTitle, Skeleton, btn } from '@/compon
 import { workTypePlural } from '@/lib/labels'
 import { openSigned } from '@/lib/open'
 
+// Label above the value: the sidebar is narrow, and long names («Интеллектуальные информационные системы») broke mid-word.
 const Row = ({ row }: { row: DetailRow }) => (
-  <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 border-b border-rule py-2.5">
-    <dt className="text-muted">{row.label}</dt><dd className="[overflow-wrap:anywhere]">{row.people ? <Authors people={row.people} /> : <ViewText item={row} />}</dd>
+  <div className="border-b border-rule py-2.5">
+    <dt className="text-sm text-muted">{row.label}</dt><dd className="break-words">{row.people ? <Authors people={row.people} /> : <ViewText item={row} />}</dd>
   </div>
 )
 
@@ -82,7 +83,7 @@ export default function WorkPage() {
 
       <header className="max-w-4xl space-y-2.5">
         <p className="text-[15px] text-ink-2">{v.kind}, {w.year}</p>
-        <h1 className="text-4xl font-bold leading-tight">{w.title}</h1>
+        <h1 className="text-3xl font-bold leading-tight sm:text-4xl">{w.title}</h1>
         <p className="text-lg"><Authors people={v.authors} /></p>
         <div className="flex flex-wrap items-center gap-2.5 pt-2">
           {v.fileButton && <Button onClick={() => open(() => getWorkFile(w.id))} loading={opening}>{v.fileButton}</Button>}

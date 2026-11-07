@@ -36,6 +36,33 @@ STATUS = {"draft": "Черновик", "published": "Опубликована", 
 PERSON_KIND = {"staff": "Преподаватель", "student": "Студент", "graduate": "Выпускник", "external": "Внешний автор"}
 LANGUAGE = {"ru": "Русский", "en": "Английский", "other": "Другой"}
 
+# Сокращения в выходных данных — на языке издания (ГОСТ Р 7.0.100–2018): у английской статьи Vol., No., P. и [et al.]
+IMPRINT = {
+    "ru": {
+        "vol": "Т.",
+        "no": "№",
+        "pages": "С.",
+        "book_pages": "с.",
+        "et_al": "[и др.]",
+        "monograph": "монография",
+        "textbook": "учебное пособие",
+    },
+    "en": {
+        "vol": "Vol.",
+        "no": "No.",
+        "pages": "P.",
+        "book_pages": "p.",
+        "et_al": "[et al.]",
+        "monograph": "monograph",
+        "textbook": "textbook",
+    },
+}
+
+
+def imprint(work: dict) -> dict[str, str]:
+    return IMPRINT["en" if work.get("language") == "en" else "ru"]
+
+
 # Коды списков журналов и подписи; списки журнала берутся из справочника journals по ISSN.
 JOURNAL_LISTS = {
     "white1": "Белый список, уровень 1",
@@ -156,7 +183,7 @@ def format_date_range(start: str, end: str | None = None) -> str:
 def format_size(size: int) -> str:
     if size < 1024 * 1024:
         return f"{max(1, int(size / 1024 + 0.5))} КБ"
-    return f"{size / 1024 / 1024:.1f} МБ"
+    return f"{size / 1024 / 1024:.1f} МБ".replace(".", ",").replace(",0 ", " ")  # «1,5 МБ», «500 МБ» — как во фронте
 
 
 def from_label(labels: dict[str, str], text: str) -> str | None:

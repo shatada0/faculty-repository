@@ -44,10 +44,12 @@ export function initialsFirst(display: string): string {
   return [...initials.map((i) => i + '.'), surname].join(' ')
 }
 
-/** Comparable key: latin surname + first initial. "Иванов И.И." and "I. Ivanov" → "ivanov:i". */
+// One surname is spelled in Latin many ways: Philippovich / Filippovich, Arkhangelsky / Arkhangelskiy, Scherbakov / Shcherbakov.
+const VARIANTS: [string, string][] = [['shch', 'sh'], ['sch', 'sh'], ['kh', 'h'], ['ph', 'f'], ['w', 'v'], ['x', 'ks'], ['j', 'i'], ['y', 'i']]
+const skeleton = (s: string) => VARIANTS.reduce((x, [a, b]) => x.replaceAll(a, b), translit(s).toLowerCase()).replace(/(.)\1+/g, '$1')
+
+/** Comparable key: surname skeleton + first initial. "Иванов И.И." and "I. Ivanov" → "ivanov:i". */
 export function nameKey(display: string): string {
   const { surname, initials } = parseName(display)
-  const s = translit(surname).toLowerCase().replace(/kh/g, 'h')
-  const i = initials[0] ? translit(initials[0]).toLowerCase().charAt(0) : ''
-  return `${s}:${i}`
+  return `${skeleton(surname)}:${initials[0] ? skeleton(initials[0]).charAt(0) : ''}`
 }

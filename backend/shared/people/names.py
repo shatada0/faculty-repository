@@ -93,12 +93,23 @@ def exact_key(name: str) -> str:
     return re.sub(r"[\s.,]", "", name.lower()).replace("ё", "е")
 
 
+# Одну фамилию латиницей пишут по-разному: Philippovich и Filippovich, Arkhangelsky и Arkhangelskiy,
+# Scherbakov и Shcherbakov. Скелет сводит такие варианты к одной строке.
+_VARIANTS = (("shch", "sh"), ("sch", "sh"), ("kh", "h"), ("ph", "f"), ("w", "v"), ("x", "ks"), ("j", "i"), ("y", "i"))
+
+
+def latin_skeleton(s: str) -> str:
+    """«Архангельский» и «Arkhangelsky» → «arhangelski»."""
+    s = translit(s).lower()
+    for a, b in _VARIANTS:
+        s = s.replace(a, b)
+    return re.sub(r"(.)\1+", r"\1", s)  # Filippovich и Filipovich, Arkhangelskii и Arkhangelski
+
+
 def short_key(display: str) -> str:
-    """Латинская фамилия и первая буква имени: «Иванов И.И.» и «I. Ivanov» → «ivanov:i»."""
+    """Скелет фамилии и первая буква имени: «Иванов И.И.» и «I. Ivanov» → «ivanov:i»."""
     surname, initials = parse_name(display)
-    s = translit(surname).lower().replace("kh", "h")
-    i = translit(initials[0]).lower()[:1] if initials else ""
-    return f"{s}:{i}"
+    return f"{latin_skeleton(surname)}:{latin_skeleton(initials[0])[:1] if initials else ''}"
 
 
 def latin_name(full_name: str) -> str:

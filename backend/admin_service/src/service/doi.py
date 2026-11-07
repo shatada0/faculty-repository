@@ -48,7 +48,10 @@ def normalize_doi(raw: str) -> str:
 def _author(a: dict) -> str:
     """«Орлов Д. С.» из given/family Crossref."""
     initials = " ".join(f"{part[0]}." for part in re.split(r"[\s.\-]+", a.get("given") or "") if part)
-    return " ".join(x for x in (a.get("family") or a.get("name") or "", initials) if x)
+    family = a.get("family") or ""
+    if family.isupper():  # «CHEREPANOVA» в Crossref — «Cherepanova», как у остальных авторов
+        family = family.title()
+    return " ".join(x for x in (family, initials) if x)
 
 
 def _orcid(a: dict) -> str | None:
@@ -67,7 +70,8 @@ def from_crossref(message: dict[str, Any]) -> dict[str, Any]:
     issued = (message.get("issued") or {}).get("date-parts") or [[None]]
     title = first("title")
     title = re.sub(r"<[^>]+>", "", title) if title else None  # JATS-разметка в заголовках
-    authors = message.get("author") or []
+    # у организации в Crossref только name («Moscow Polytechnic University, Moscow, Russia») — это не автор
+    authors = [a for a in message.get("author") or [] if a.get("family")]
     printed = [t.get("value") for t in message.get("issn-type") or [] if t.get("type") == "print"]
     issns = list(dict.fromkeys(issn_key(i) for i in [*printed, *(message.get("ISSN") or [])] if i))
     language = message.get("language")

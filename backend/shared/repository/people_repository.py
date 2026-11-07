@@ -10,7 +10,7 @@ from sqlalchemy.sql import Select
 
 from shared.imports import ImportItem
 from shared.people import Person, PersonName
-from shared.people.names import exact_key, name_query, parse_name, short_key, short_name, surname_first, translit
+from shared.people.names import exact_key, latin_skeleton, name_query, parse_name, short_key, short_name, surname_first
 from shared.repository.works_repository import few, norm, plain
 from shared.storage import photo_url
 from shared.uow import UnitOfWork
@@ -26,8 +26,8 @@ def is_latin(name: str) -> bool:
 
 def initials_fit(display: str, full_name: str) -> bool:
     """Инициалы написания не противоречат ФИО: «Oseledets I.» и «I. V.» подходят «Ивану Валерьевичу», «I. A.» — нет."""
-    a = [translit(i).lower()[:1] for i in parse_name(display)[1]]
-    b = [translit(i).lower()[:1] for i in parse_name(full_name)[1]]
+    a = [latin_skeleton(i)[:1] for i in parse_name(display)[1]]
+    b = [latin_skeleton(i)[:1] for i in parse_name(full_name)[1]]
     return all(x == y for x, y in zip(a, b, strict=False))
 
 

@@ -26,6 +26,8 @@ describe('names', () => {
     expect(shortName('Белова Наталья Викторовна')).toBe('Белова Н. В.')
     expect(nameKey('Иванов И.И.')).toBe(nameKey('I. Ivanov'))
     expect(nameKey('Захаров И.')).toBe(nameKey('Zakharov I.'))
+    expect(nameKey('Филиппович Андрей Юрьевич')).toBe(nameKey('Philippovich A.'))
+    expect(nameKey('Архангельский А. И.')).toBe(nameKey('Arkhangelsky A. I.'))
   })
   it('maps table labels with endings', () => {
     expect(fromLabel(confLevelLabels, 'международный')).toBe('international')
