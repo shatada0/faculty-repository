@@ -73,7 +73,8 @@
             "type": "loki",
             "uid": "loki"
           },
-          "expr": "quantile_over_time(0.5, {service=\"extraction_worker\"} | json | message=\"Элемент разобран\" | unwrap duration_ms [1h])"
+          "expr": "quantile_over_time(0.5, {service=\"extraction_worker\"} | json | __error__=\"\" | message=\"Элемент разобран\" | unwrap duration_ms [1h]) by (service)",
+          "legendFormat": "медиана"
         }
       ],
       "gridPos": {

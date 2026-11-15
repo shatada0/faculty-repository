@@ -152,7 +152,7 @@ def test_keywords_hyphen_break_and_caps_over_lines() -> None:
     assert by_regex("", caps)["keywords"] == ["игровой движок", "компьютерная графика", "c++", "редактор уровней"]
 
 
-async def test_llm_request_turns_reasoning_off_and_requires_fields() -> None:
+async def test_llm_request_turns_reasoning_off_and_requires_fields(caplog: pytest.LogCaptureFixture) -> None:
     """Ollama не понимает chat_template_kwargs: без reasoning_effort Qwen3.5 тратит все токены на рассуждения."""
     sent: dict = {}
 
@@ -161,8 +161,12 @@ async def test_llm_request_turns_reasoning_off_and_requires_fields() -> None:
         return httpx.Response(200, json={"choices": [{"message": {"content": '{"title": "Тема"}'}}]})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(answer)) as http:
-        card = await ask_llm(http, "текст", {})
+        with caplog.at_level("INFO"):
+            card = await ask_llm(http, "текст", {})
     assert card.title == "Тема" and card.authors == []  # пропуски разбор прощает
+    # по этой строке строятся панели «ИИ» в Grafana: время ответа и исходы запросов к модели
+    answered = [r for r in caplog.records if r.getMessage() == "LLM ответил"]
+    assert len(answered) == 1 and answered[0].duration_ms >= 0
     assert sent["reasoning_effort"] == "none" and sent["chat_template_kwargs"] == {"enable_thinking": False}
     schema = sent["response_format"]["json_schema"]["schema"]
     assert set(schema["required"]) == {"title", "authors", "supervisors", "department", "annotation"}

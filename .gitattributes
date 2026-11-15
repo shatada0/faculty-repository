@@ -1,4 +1,6 @@
 * text=auto eol=lf
+# cmd.exe с одними LF путается в метках и goto
+*.cmd text eol=crlf
 *.pdf binary
 *.png binary
 *.woff binary

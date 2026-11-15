@@ -87,6 +87,8 @@ server {
     add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Content-Type-Options nosniff always;
     location /minio/ { return 404; }   # health, метрики и admin API MinIO
+    # start.cmd открывает этот адрес, чтобы браузер один раз принял сертификат: иначе PDF работ не откроются
+    location = / { default_type "text/html; charset=utf-8"; return 200 "<!doctype html><title>Файлы работ</title><p>Сертификат принят: файлы работ будут открываться. Эту вкладку можно закрыть.</p>"; }
     location / {
         limit_except GET HEAD { deny all; }   # снаружи MinIO только читается
         proxy_set_header Host $host;

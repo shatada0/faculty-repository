@@ -1,5 +1,6 @@
 """auth_service и мидлвари: токены, проверка Origin, единый формат ошибок."""
 
+import io
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -11,6 +12,7 @@ from sqlalchemy import select
 from admin_service.src.main import app as admin_app
 from auth_service.src.main import app as auth_app
 from auth_service.src.service.auth_service import hasher
+from auth_service.src.users import read_password
 from shared.auth.models import User
 from shared.auth.session import SessionUser, _key, issue_token, read_token
 from shared.config import AuthConfig
@@ -107,3 +109,9 @@ async def test_login_me_logout(demo: dict) -> None:
 def test_host_cookie_requires_secure() -> None:
     with pytest.raises(ValueError, match="AUTH_COOKIE_SECURE"):
         AuthConfig(cookie_name="__Host-session", cookie_secure=False)
+
+
+def test_password_from_powershell_pipe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """'moderator123' | docker compose exec … в PowerShell приходит с BOM и \r\n: в пароль они не попадают."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("\N{BYTE ORDER MARK}moderator123\r\n"))
+    assert read_password() == "moderator123"

@@ -13,8 +13,8 @@ const STATS_URL = import.meta.env.VITE_STATS_URL as string | undefined
 /** Where a signed-in user works: authors upload materials, moderators and admins run the repository. */
 export const homeFor = (user: User) => (user.role === 'author' ? '/my' : '/admin')
 
-const SITE = 'Либерея'
-/** Tab title of the page: "Название — Либерея"; `null` is the site's own title. Not known yet (undefined) keeps
+const SITE = 'ARCHIVE'
+/** Tab title of the page: "Название — ARCHIVE"; `null` is the site's own title. Not known yet (undefined) keeps
  * the current one, so a page still loading does not override what its NotFound child has set. */
 export function useTitle(title?: string | null | false) {
   useEffect(() => {
@@ -68,7 +68,7 @@ function Header() {
           <Link to="/" className="mr-auto flex items-center gap-3 pb-3 text-ink no-underline hover:text-ink">
             <img src="/logo.svg" alt="" className="h-12 w-12 shrink-0" />
             <span>
-              <span className="block text-2xl font-bold leading-tight text-brand">Либерея</span>
+              <span className="block text-2xl font-bold leading-tight text-brand">{SITE}</span>
               <span className="block text-sm text-ink-2">репозиторий работ факультета</span>
             </span>
           </Link>
@@ -92,7 +92,7 @@ function NavigationBar() {
 const Footer = () => (
   <footer className="border-t border-ink">
     <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-2 px-4 pb-7 pt-4 text-sm text-ink-2">
-      <span>{ORG} · Либерея, репозиторий работ факультета</span>
+      <span>{ORG} · {SITE}, репозиторий работ факультета</span>
       <span>{new Date().getFullYear()}</span>
     </div>
   </footer>

@@ -78,20 +78,32 @@
     },
     {
       "id": 3,
-      "title": "Скорость генерации vLLM",
+      "title": "Время ответа модели",
       "type": "timeseries",
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "loki",
+            "uid": "loki"
           },
-          "expr": "rate(vllm:generation_tokens_total[5m])"
+          "expr": "quantile_over_time(0.5, {service=\"extraction_worker\"} | json | __error__=\"\" | message=\"LLM ответил\" | unwrap duration_ms [1h]) by (service)",
+          "queryType": "range",
+          "legendFormat": "медиана"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "quantile_over_time(0.95, {service=\"extraction_worker\"} | json | __error__=\"\" | message=\"LLM ответил\" | unwrap duration_ms [1h]) by (service)",
+          "queryType": "range",
+          "legendFormat": "95-й процентиль"
         }
       ],
       "gridPos": {
@@ -102,27 +114,29 @@
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "tps"
+          "unit": "ms"
         },
         "overrides": []
       }
     },
     {
       "id": 4,
-      "title": "Запросы в обработке vLLM",
+      "title": "Ответы модели по исходу",
       "type": "timeseries",
       "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
+        "type": "loki",
+        "uid": "loki"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
+            "type": "loki",
+            "uid": "loki"
           },
-          "expr": "vllm:num_requests_running"
+          "expr": "sum by (message) (count_over_time({service=\"extraction_worker\"} | json | __error__=\"\" | message=~\"LLM ответил|LLM: таймаут|LLM-сервер недоступен|LLM: цепь разомкнута|LLM ответил ошибкой|LLM отклонил запрос|Ответ модели не разобран\" [1h]))",
+          "queryType": "range",
+          "legendFormat": "{{message}}"
         }
       ],
       "gridPos": {
@@ -130,6 +144,10 @@
         "y": 8,
         "w": 12,
         "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
       }
     }
   ]

@@ -360,7 +360,7 @@ async def _chat[M: BaseModel](http: httpx.AsyncClient, prompt: str, text: str, m
         choice = response.json()["choices"][0]
         finish = choice.get("finish_reason")  # length — ответ обрезан по max_tokens
         content = choice["message"]["content"] or ""  # null — все токены ушли на рассуждения
-        return model.model_validate_json(content)
+        answer = model.model_validate_json(content)
     except (KeyError, IndexError, TypeError, AttributeError, ValueError, ValidationError) as e:
         log["stage"] = "parse"
         # Сам ответ в лог не пишем: в нём ФИО и аннотация.
@@ -369,6 +369,9 @@ async def _chat[M: BaseModel](http: httpx.AsyncClient, prompt: str, text: str, m
             extra=ctx | {"stage": "parse", "finish_reason": finish, "chars": len(content), "error": type(e).__name__},
         )
         raise ItemError("ИИ вернул неверный ответ") from e
+    # время каждого ответа — панели «ИИ» в Grafana, с любым сервером: vLLM, Ollama, llama.cpp
+    logger.info("LLM ответил", extra=ctx | {"finish_reason": finish})
+    return answer
 
 
 PATRONYMIC = re.compile(r"(вич|вна|ична|оглы|кызы)$", re.IGNORECASE)
@@ -464,10 +467,8 @@ async def extract(pdf: bytes, http: httpx.AsyncClient, log: dict) -> tuple[dict[
             raise ItemError("Скан не удалось распознать")
     fields = by_regex(pages[0] if pages else "", text)
     meta = {k: {"source": "ai", "confidence": REGEX} for k in fields}
-    started = time.perf_counter()
     log["stage"] = "ai"
     card = await ask_llm(http, text, log)
-    logger.info("Карточка от модели", extra=log | {"duration_ms": round((time.perf_counter() - started) * 1000)})
     normalized = norm(text)
     card.annotation = clean_annotation(card.annotation)
     title_page = pages[0] if pages else ""

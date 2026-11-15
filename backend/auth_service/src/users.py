@@ -26,8 +26,12 @@ ROLES = ("moderator", "admin", "author")
 
 
 def read_password() -> str:
-    # \r — от файла или echo под Windows: иначе войдёт в пароль, и набранным вручную не войти
-    password = getpass.getpass("Пароль: ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\r\n")
+    # \r — от файла или echo под Windows, BOM — от конвейера PowerShell ('пароль' | docker compose exec …):
+    # иначе они войдут в пароль, и набранным вручную не войти
+    piped = not sys.stdin.isatty()
+    password = (
+        sys.stdin.readline().rstrip("\r\n").lstrip("\N{BYTE ORDER MARK}") if piped else getpass.getpass("Пароль: ")
+    )
     if not 8 <= len(password) <= PASSWORD_MAX:
         sys.exit(f"Пароль — от 8 до {PASSWORD_MAX} символов")
     return password
