@@ -33,6 +33,8 @@ docker build -f Dockerfile.base -t project-base .   # с выводом: пер�
 Check 'собрать базовый образ'
 docker compose up -d --build --wait
 Check 'запустить сервисы'
+# Grafana берёт пароль из секрета только при создании своей базы: на старом томе остаётся прежний
+docker compose exec -T grafana sh -c 'grafana cli admin reset-admin-password "$(cat /run/secrets/grafana_admin)"' *> $null
 
 $works = docker compose exec -T postgres psql -U app -d app -Atc 'select count(*) from works'
 if ("$works".Trim() -eq '0') {

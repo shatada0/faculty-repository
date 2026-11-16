@@ -170,6 +170,7 @@ services:
     restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin
+      GF_AUTH_BASIC_PASSWORD_POLICY: "false"   # пароль admin — 48 случайных hex-символов, правило «заглавная+символ» его не пропускает
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_SERVER_ROOT_URL: "https://stats.${SITE_DOMAIN}/"
     secrets: [grafana_admin, db_grafana]

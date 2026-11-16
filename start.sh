@@ -18,6 +18,8 @@ if [ ! -f secrets/jwt_private.pem ] || [ ! -f certs/fullchain.pem ]; then
 fi
 docker build -f Dockerfile.base -t project-base .   # с выводом: первая сборка идёт минуты, без него кажется зависшей
 docker compose up -d --build --wait
+# Grafana берёт пароль из секрета только при создании своей базы: на старом томе остаётся прежний
+docker compose exec -T grafana sh -c 'grafana cli admin reset-admin-password "$(cat /run/secrets/grafana_admin)"' > /dev/null || echo 'Пароль Grafana не обновлён: остался прежний.'
 
 if [ "$(docker compose exec -T postgres psql -U app -d app -Atc 'select count(*) from works')" = 0 ]; then
   person=$(docker compose exec -T admin_service python -m admin_service.src.seed demo | sed -n 's/.*--person //p')
